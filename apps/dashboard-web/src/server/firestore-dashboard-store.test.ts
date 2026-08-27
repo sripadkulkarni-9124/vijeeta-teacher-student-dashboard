@@ -710,6 +710,20 @@ describe("FirestoreDashboardStore", () => {
     expect(database.created("classrooms")).toHaveLength(0);
   });
 
+  it("replays class creation idempotently for the same verified actor and correlation key", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+
+    const first = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const replay = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+
+    expect(replay).toEqual(first);
+    await expect(store.create(teacherPrincipal, { name: "Chemistry A" }, context())).rejects.toMatchObject({ code: "idempotency_conflict" });
+    expect(database.created("classrooms")).toHaveLength(1);
+    expect([...database.documents.values()].filter((document) => document.action === "classroom.created")).toHaveLength(1);
+  });
+
   it("rejects a malformed reverse membership instead of exposing its classroom directly", async () => {
     const database = new FakeFirestore();
     const { store } = storeFor(database);
@@ -765,5 +779,195 @@ describe("FirestoreDashboardStore", () => {
 
     expect(database.created("classrooms")).toHaveLength(0);
     expect([...database.documents.keys()].some((path) => path.startsWith("classrooms/"))).toBe(false);
+  });
+
+  it("persists invitation and delivery attempts without creating membership, then accepts atomically and idempotently", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const invite = await store.createInvitation(teacherPrincipal, {
+      id: "invite-flow", classroomId: classroom.id, normalizedEmail: "student@example.com",
+      tokenDigest: "d".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+
+    expect(invite).toMatchObject({ status: "pending", delivery: "pending" });
+    expect([...database.documents.keys()].some((path) => path.includes("/members/"))).toBe(false);
+    const attempt = await store.beginInvitationDelivery(teacherPrincipal, classroom.id, invite.id, "capture", context());
+    const sent = await store.completeInvitationDelivery(teacherPrincipal, classroom.id, invite.id, attempt.attemptId, {
+      status: "sent", provider: "capture", providerMessageId: "<attempt@example.test>",
+    }, context());
+    expect(sent.delivery).toBe("sent");
+    expect([...database.documents.keys()].some((path) => path.includes("/members/"))).toBe(false);
+
+    const accepted = await store.acceptInvitation(studentPrincipal, {
+      classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1,
+    }, context());
+    const replay = await store.acceptInvitation(studentPrincipal, {
+      classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1,
+    }, context());
+    expect(replay).toEqual(accepted);
+    expect(database.documents.get(`classrooms/${classroom.id}/members/student-uid`)).toEqual(accepted);
+    expect(database.documents.get(`studentMemberships/student-uid/classes/${classroom.id}`)).toEqual(accepted);
+    expect([...database.documents.values()].filter((document) => document.action === "invite.accepted")).toHaveLength(1);
+  });
+
+  it("replays invitation creation without duplicating a token record for the same correlation key", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const first = await store.createInvitation(teacherPrincipal, {
+      id: "invite-first", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "f".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+    const replay = await store.createInvitation(teacherPrincipal, {
+      id: "invite-retry", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "n".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+
+    expect(replay).toEqual(first);
+    expect(database.created("invites")).toHaveLength(1);
+    expect([...database.documents.values()].filter((document) => document.action === "invite.created")).toHaveLength(1);
+    await expect(store.createInvitation(teacherPrincipal, {
+      id: "invite-conflict", classroomId: classroom.id, normalizedEmail: "other@example.com", tokenDigest: "x".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context())).rejects.toMatchObject({ code: "idempotency_conflict" });
+  });
+
+  it("fails invitation identity, ownership, archive, and rate-limit checks without transport or membership side effects", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    await activeTeacher(store, otherTeacherPrincipal);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+
+    await expect(store.createInvitation(otherTeacherPrincipal, {
+      id: "cross-owner", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "x".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context())).rejects.toMatchObject({ code: "classroom_forbidden" });
+
+    for (let index = 0; index < 5; index += 1) {
+      await store.createInvitation(teacherPrincipal, {
+        id: `invite-rate-${index}`, classroomId: classroom.id, normalizedEmail: "rate@example.com", tokenDigest: String(index).padEnd(64, "d"), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+      }, { ...context(), correlationId: `123e4567-e89b-12d3-a456-${String(index).padStart(12, "0")}` });
+    }
+    await expect(store.createInvitation(teacherPrincipal, {
+      id: "invite-rate-denied", classroomId: classroom.id, normalizedEmail: "rate@example.com", tokenDigest: "z".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, { ...context(), correlationId: "123e4567-e89b-12d3-a456-999999999999" })).rejects.toMatchObject({ code: "rate_limited" });
+    expect(database.documents.has(`classrooms/${classroom.id}/invites/invite-rate-denied`)).toBe(false);
+
+    await store.archive(teacherPrincipal, classroom.id, context("Term ended"));
+    await expect(store.createInvitation(teacherPrincipal, {
+      id: "archived-invite", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "a".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, { ...context(), correlationId: "123e4567-e89b-12d3-a456-888888888888" })).rejects.toMatchObject({ code: "classroom_archived" });
+  });
+
+  it("rotates pending invitations before redelivery and rejects stale compare inputs", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const invite = await store.createInvitation(teacherPrincipal, {
+      id: "invite-rotate", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "o".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+    const rotated = await store.rotateInvitation(teacherPrincipal, {
+      id: invite.id, classroomId: classroom.id, normalizedEmail: invite.normalizedEmail, tokenDigest: "n".repeat(64), tokenVersion: 2, expiresAt: "2026-09-05T08:00:00.000Z",
+    }, context());
+    expect(rotated).toMatchObject({ tokenDigest: "n".repeat(64), tokenVersion: 2, delivery: "pending" });
+    const replay = await store.rotateInvitation(teacherPrincipal, {
+      id: invite.id, classroomId: classroom.id, normalizedEmail: invite.normalizedEmail, tokenDigest: "x".repeat(64), tokenVersion: 3, expiresAt: "2026-09-06T08:00:00.000Z",
+    }, context());
+    expect(replay).toEqual(rotated);
+
+    await expect(store.acceptInvitation(studentPrincipal, {
+      classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1,
+    }, context())).rejects.toMatchObject({ code: "invitation_invalid" });
+    expect(database.documents.has(`classrooms/${classroom.id}/members/student-uid`)).toBe(false);
+  });
+
+  it("returns an owner-only redacted roster and rolls acceptance back when its audit mirror fails", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    await activeTeacher(store, otherTeacherPrincipal);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const invite = await store.createInvitation(teacherPrincipal, {
+      id: "invite-roster", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "r".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+    const roster = await store.listRoster(teacherPrincipal, classroom.id, { limit: 25 });
+    expect(roster.invitations[0]).toMatchObject({ id: invite.id, maskedEmail: "s***@example.com" });
+    expect(JSON.stringify(roster)).not.toContain("student@example.com");
+    expect(JSON.stringify(roster)).not.toContain("r".repeat(64));
+    await expect(store.listRoster(otherTeacherPrincipal, classroom.id, { limit: 25 })).rejects.toMatchObject({ code: "classroom_forbidden" });
+
+    database.failCreateCollection = "auditEvents";
+    await expect(store.acceptInvitation(studentPrincipal, {
+      classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1,
+    }, context())).rejects.toThrow("injected create failure");
+    expect(database.documents.has(`classrooms/${classroom.id}/members/student-uid`)).toBe(false);
+    expect(database.documents.has(`studentMemberships/student-uid/classes/${classroom.id}`)).toBe(false);
+    expect(database.documents.get(`classrooms/${classroom.id}/invites/${invite.id}`)).toMatchObject({ status: "pending" });
+  });
+
+  it("fails inspect and acceptance closed for wrong, unverified, missing-Student, expired, and revoked identities", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    const noStudent = principal("no-student", "student@example.com", true);
+    await store.onboard(noStudent, { role: "teacher" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const invite = await store.createInvitation(teacherPrincipal, {
+      id: "invite-hostile", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "h".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+
+    await expect(store.inspectInvitation(principal("wrong", "wrong@example.com", true), invite.id)).rejects.toMatchObject({ code: "invitation_invalid" });
+    await expect(store.inspectInvitation(principal("unverified", "student@example.com", false), invite.id)).rejects.toMatchObject({ code: "verified_email_required" });
+    database.documents.set("profiles/changed-email", {
+      internalProfileId: "profile-changed", firebaseUid: "changed-email", verifiedEmail: "old@example.com", displayName: "Changed",
+      roles: { student: "active" }, activeRole: "student", onboardingCompleted: true, schemaVersion: 2, createdAt: NOW, updatedAt: NOW,
+    });
+    await expect(store.inspectInvitation(principal("changed-email", "student@example.com", true), invite.id)).rejects.toMatchObject({ code: "invitation_invalid" });
+    await expect(store.acceptInvitation(noStudent, {
+      classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1,
+    }, context())).rejects.toMatchObject({ code: "student_role_required" });
+
+    await store.revokeInvitation(teacherPrincipal, classroom.id, invite.id, context("Recipient removed"));
+    await expect(store.inspectInvitation(studentPrincipal, invite.id)).rejects.toMatchObject({ code: "invitation_invalid" });
+    expect(database.documents.has(`classrooms/${classroom.id}/members/student-uid`)).toBe(false);
+
+    database.documents.set("profiles/no-student", {
+      ...database.documents.get("profiles/no-student"),
+      roles: { teacher: "pending", student: "active" },
+      activeRole: "student",
+    });
+
+    const expired = await store.createInvitation(teacherPrincipal, {
+      id: "invite-expired", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "e".repeat(64), tokenVersion: 1, expiresAt: "2026-08-28T08:00:01.000Z",
+    }, context());
+    await expect(store.acceptInvitation(noStudent, {
+      classroomId: classroom.id, invitationId: expired.id, expectedTokenDigest: expired.tokenDigest, expectedTokenVersion: 1,
+    }, { ...context(), now: "2026-08-28T08:00:02.000Z" })).rejects.toMatchObject({ code: "invitation_invalid" });
+  });
+
+  it("allows one concurrent invitation acceptance winner and preserves a consistent idempotent replay", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const invite = await store.createInvitation(teacherPrincipal, {
+      id: "invite-concurrent", classroomId: classroom.id, normalizedEmail: "student@example.com", tokenDigest: "c".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+    const input = { classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1 };
+
+    const results = await Promise.allSettled([
+      store.acceptInvitation(studentPrincipal, input, context()),
+      store.acceptInvitation(studentPrincipal, input, context()),
+    ]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    await expect(store.acceptInvitation(studentPrincipal, input, context())).resolves.toMatchObject({ studentUid: "student-uid" });
+    expect([...database.documents.values()].filter((document) => document.action === "invite.accepted")).toHaveLength(1);
   });
 });

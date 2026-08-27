@@ -7,9 +7,11 @@ import {
   AuditEventSchema,
   ClassroomAssignmentSchema,
   ClassroomInviteSchema,
+  ClassroomRosterResponseSchema,
   ClassroomSchema,
   DashboardProfileV2Schema,
   InviteClassroomMemberRequestSchema,
+  InspectInvitationResponseSchema,
   UpdateActiveRoleRequestSchema,
   VerifiedPrincipalSchema,
 } from "./connected-dashboard";
@@ -234,6 +236,7 @@ describe("connected dashboard contracts", () => {
 
   it("validates strict route intents and stable safe errors", () => {
     expect(InviteClassroomMemberRequestSchema.parse({ email: "student@example.com" }).email).toBe("student@example.com");
+    expect(InviteClassroomMemberRequestSchema.parse({ email: " Student@Example.COM " }).email).toBe("student@example.com");
     expect(() => InviteClassroomMemberRequestSchema.parse({ email: "student@example.com", uid: "forged" })).toThrow();
     expect(UpdateActiveRoleRequestSchema.parse({ activeRole: "student" }).activeRole).toBe("student");
 
@@ -245,5 +248,65 @@ describe("connected dashboard contracts", () => {
         retryable: false,
       },
     }).error.retryable).toBe(false);
+  });
+
+  it("reports ambiguous invitation delivery without exposing transport or token data", () => {
+    const invite = ClassroomInviteSchema.parse({
+      id: "invite-1",
+      classroomId: "classroom-1",
+      ownerUid: "teacher-1",
+      normalizedEmail: "student@example.com",
+      tokenDigest: "d".repeat(64),
+      tokenVersion: 1,
+      expiresAt: "2026-09-04T00:00:00.000Z",
+      status: "pending",
+      delivery: "unknown",
+      deliveryErrorCategory: "ambiguous",
+      acceptedUid: null,
+      acceptedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    expect(invite.delivery).toBe("unknown");
+    expect(() => ClassroomInviteSchema.parse({ ...invite, providerPayload: { token: "secret" } })).toThrow();
+  });
+
+  it("bounds roster projections and invitation inspection to redacted fields", () => {
+    const roster = ClassroomRosterResponseSchema.parse({
+      members: [{
+        studentUid: "student-1",
+        displayName: "Student One",
+        status: "active",
+        joinedAt: timestamp,
+      }],
+      invitations: [{
+        id: "invite-1",
+        maskedEmail: "s***@example.com",
+        expiresAt: "2026-09-04T00:00:00.000Z",
+        status: "pending",
+        delivery: "unknown",
+        deliveryErrorCategory: "ambiguous",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      }],
+      nextMemberCursor: null,
+      nextInvitationCursor: null,
+    });
+    expect(roster.invitations[0]?.maskedEmail).toBe("s***@example.com");
+    expect(() => ClassroomRosterResponseSchema.parse({ ...roster, invitations: [{ ...roster.invitations[0], normalizedEmail: "student@example.com" }] })).toThrow();
+
+    const inspected = InspectInvitationResponseSchema.parse({
+      inviteId: "invite-1",
+      classroomId: "classroom-1",
+      classroomName: "Physics A",
+      teacherDisplayName: "Teacher One",
+      targetEmailMatches: true,
+      studentOnboardingRequired: true,
+      expiresAt: "2026-09-04T00:00:00.000Z",
+      status: "pending",
+    });
+    expect(inspected.targetEmailMatches).toBe(true);
+    expect(() => InspectInvitationResponseSchema.parse({ ...inspected, targetEmail: "student@example.com", tokenDigest: "d".repeat(64) })).toThrow();
   });
 });

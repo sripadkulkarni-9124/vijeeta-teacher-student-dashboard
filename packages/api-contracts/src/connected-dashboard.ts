@@ -92,8 +92,11 @@ export type Classroom = z.infer<typeof ClassroomSchema>;
 export const ClassroomInviteStatusSchema = z.enum(["pending", "accepted", "revoked", "expired"]);
 export type ClassroomInviteStatus = z.infer<typeof ClassroomInviteStatusSchema>;
 
-export const InviteDeliveryStateSchema = z.enum(["pending", "sent", "failed", "redelivery_requested"]);
+export const InviteDeliveryStateSchema = z.enum(["pending", "sent", "failed", "unknown", "redelivery_requested"]);
 export type InviteDeliveryState = z.infer<typeof InviteDeliveryStateSchema>;
+
+export const InviteDeliveryErrorCategorySchema = z.enum(["retryable", "permanent", "ambiguous"]);
+export type InviteDeliveryErrorCategory = z.infer<typeof InviteDeliveryErrorCategorySchema>;
 
 export const ClassroomInviteSchema = z.object({
   id: IdentifierSchema,
@@ -105,7 +108,7 @@ export const ClassroomInviteSchema = z.object({
   expiresAt: IsoTimestampSchema,
   status: ClassroomInviteStatusSchema,
   delivery: InviteDeliveryStateSchema,
-  deliveryErrorCategory: z.enum(["retryable", "permanent"]).nullable().optional(),
+  deliveryErrorCategory: InviteDeliveryErrorCategorySchema.nullable().optional(),
   acceptedUid: IdentifierSchema.nullable(),
   acceptedAt: IsoTimestampSchema.nullable(),
   createdAt: IsoTimestampSchema,
@@ -118,8 +121,15 @@ export const ClassroomInviteSchema = z.object({
   if (!accepted && (invite.acceptedUid !== null || invite.acceptedAt !== null)) {
     context.addIssue({ code: "custom", message: "Only accepted invitations include acceptance metadata", path: ["acceptedUid"] });
   }
-  if (invite.delivery !== "failed" && invite.deliveryErrorCategory !== undefined && invite.deliveryErrorCategory !== null) {
-    context.addIssue({ code: "custom", message: "Only failed delivery includes an error category", path: ["deliveryErrorCategory"] });
+  const categoryAllowed = invite.delivery === "failed" || invite.delivery === "unknown";
+  if (!categoryAllowed && invite.deliveryErrorCategory !== undefined && invite.deliveryErrorCategory !== null) {
+    context.addIssue({ code: "custom", message: "Only failed or unknown delivery includes an error category", path: ["deliveryErrorCategory"] });
+  }
+  if (invite.delivery === "unknown" && invite.deliveryErrorCategory !== "ambiguous") {
+    context.addIssue({ code: "custom", message: "Unknown delivery requires an ambiguous category", path: ["deliveryErrorCategory"] });
+  }
+  if (invite.delivery === "failed" && invite.deliveryErrorCategory === "ambiguous") {
+    context.addIssue({ code: "custom", message: "Failed delivery cannot be ambiguous", path: ["deliveryErrorCategory"] });
   }
 });
 export type ClassroomInvite = z.infer<typeof ClassroomInviteSchema>;
@@ -202,6 +212,10 @@ export const AuditActionSchema = z.enum([
   "classroom.archived",
   "classroom.restored",
   "invite.created",
+  "invite.delivery_started",
+  "invite.delivery_sent",
+  "invite.delivery_failed",
+  "invite.delivery_unknown",
   "invite.revoked",
   "invite.redelivery_requested",
   "invite.redelivered",
@@ -271,7 +285,12 @@ export type ClassroomResponse = z.infer<typeof ClassroomResponseSchema>;
 export const ClassroomListResponseSchema = z.object({ classrooms: z.array(ClassroomSchema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict();
 export type ClassroomListResponse = z.infer<typeof ClassroomListResponseSchema>;
 
-export const InviteClassroomMemberRequestSchema = z.object({ email: NormalizedEmailSchema }).strict();
+export const InviteClassroomMemberRequestSchema = z.object({
+  email: z.preprocess(
+    (value) => typeof value === "string" ? value.trim().toLowerCase() : value,
+    NormalizedEmailSchema,
+  ),
+}).strict();
 export type InviteClassroomMemberRequest = z.infer<typeof InviteClassroomMemberRequestSchema>;
 export const ClassroomInviteProjectionSchema = z.object({
   id: IdentifierSchema,
@@ -281,15 +300,57 @@ export const ClassroomInviteProjectionSchema = z.object({
   expiresAt: IsoTimestampSchema,
   status: ClassroomInviteStatusSchema,
   delivery: InviteDeliveryStateSchema,
-  deliveryErrorCategory: z.enum(["retryable", "permanent"]).nullable().optional(),
+  deliveryErrorCategory: InviteDeliveryErrorCategorySchema.nullable().optional(),
   acceptedUid: IdentifierSchema.nullable(),
   acceptedAt: IsoTimestampSchema.nullable(),
   createdAt: IsoTimestampSchema,
   updatedAt: IsoTimestampSchema,
-}).strict();
+}).strict().superRefine((invite, context) => {
+  if (invite.delivery === "unknown" && invite.deliveryErrorCategory !== "ambiguous") {
+    context.addIssue({ code: "custom", message: "Unknown delivery requires an ambiguous category", path: ["deliveryErrorCategory"] });
+  }
+  if (invite.delivery !== "failed" && invite.delivery !== "unknown" && invite.deliveryErrorCategory != null) {
+    context.addIssue({ code: "custom", message: "Delivery error category is unavailable for this state", path: ["deliveryErrorCategory"] });
+  }
+});
 export type ClassroomInviteProjection = z.infer<typeof ClassroomInviteProjectionSchema>;
 export const ClassroomInviteResponseSchema = z.object({ invite: ClassroomInviteProjectionSchema }).strict();
 export type ClassroomInviteResponse = z.infer<typeof ClassroomInviteResponseSchema>;
+
+export const ClassroomRosterMemberSchema = z.object({
+  studentUid: IdentifierSchema,
+  displayName: BoundedTextSchema(160).nullable(),
+  status: ClassroomMembershipStatusSchema,
+  joinedAt: IsoTimestampSchema,
+}).strict();
+export type ClassroomRosterMember = z.infer<typeof ClassroomRosterMemberSchema>;
+
+export const ClassroomRosterInvitationSchema = z.object({
+  id: IdentifierSchema,
+  maskedEmail: z.string().min(3).max(MAX_EMAIL_LENGTH),
+  expiresAt: IsoTimestampSchema,
+  status: ClassroomInviteStatusSchema,
+  delivery: InviteDeliveryStateSchema,
+  deliveryErrorCategory: InviteDeliveryErrorCategorySchema.nullable().optional(),
+  createdAt: IsoTimestampSchema,
+  updatedAt: IsoTimestampSchema,
+}).strict().superRefine((invite, context) => {
+  if (invite.delivery === "unknown" && invite.deliveryErrorCategory !== "ambiguous") {
+    context.addIssue({ code: "custom", message: "Unknown delivery requires an ambiguous category", path: ["deliveryErrorCategory"] });
+  }
+  if (invite.delivery !== "failed" && invite.delivery !== "unknown" && invite.deliveryErrorCategory != null) {
+    context.addIssue({ code: "custom", message: "Delivery error category is unavailable for this state", path: ["deliveryErrorCategory"] });
+  }
+});
+export type ClassroomRosterInvitation = z.infer<typeof ClassroomRosterInvitationSchema>;
+
+export const ClassroomRosterResponseSchema = z.object({
+  members: z.array(ClassroomRosterMemberSchema).max(MAX_PAGE_SIZE),
+  invitations: z.array(ClassroomRosterInvitationSchema).max(MAX_PAGE_SIZE),
+  nextMemberCursor: z.string().max(512).nullable(),
+  nextInvitationCursor: z.string().max(512).nullable(),
+}).strict();
+export type ClassroomRosterResponse = z.infer<typeof ClassroomRosterResponseSchema>;
 
 export const InspectInvitationRequestSchema = z.object({ token: z.string().min(1).max(1024) }).strict();
 export type InspectInvitationRequest = z.infer<typeof InspectInvitationRequestSchema>;
@@ -297,6 +358,9 @@ export const InspectInvitationResponseSchema = z.object({
   inviteId: IdentifierSchema,
   classroomId: IdentifierSchema,
   classroomName: BoundedTextSchema(120),
+  teacherDisplayName: BoundedTextSchema(160),
+  targetEmailMatches: z.boolean(),
+  studentOnboardingRequired: z.boolean(),
   expiresAt: IsoTimestampSchema,
   status: ClassroomInviteStatusSchema,
 }).strict();

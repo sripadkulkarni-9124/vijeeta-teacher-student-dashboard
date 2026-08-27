@@ -5,6 +5,7 @@ import type {
   ClassroomAssignment,
   ClassroomInvite,
   ClassroomMembership,
+  ClassroomRosterResponse,
   CreateClassroomAssignmentRequest,
   CreateClassroomRequest,
   DashboardProfileOnboardRequest,
@@ -91,14 +92,73 @@ export interface ClassroomRepository {
   ): Promise<Classroom>;
 }
 
+export interface PaginatedClassroomRepository extends ClassroomRepository {
+  listForPrincipalPage(principal: VerifiedPrincipal, page: PaginationRequest): Promise<Page<Classroom>>;
+}
+
 export type CreateInvitationInput = Pick<
   ClassroomInvite,
-  "classroomId" | "normalizedEmail" | "tokenDigest" | "tokenVersion" | "expiresAt"
+  "id" | "classroomId" | "normalizedEmail" | "tokenDigest" | "tokenVersion" | "expiresAt"
 >;
+
+export interface InvitationDispatch {
+  invite: ClassroomInvite;
+  classroomName: string;
+  teacherName: string;
+  teacherEmail: string;
+}
+
+export interface InvitationInspection extends InvitationDispatch {
+  studentOnboardingRequired: boolean;
+}
+
+export interface RosterPagination {
+  limit: number;
+  memberCursor?: string;
+  invitationCursor?: string;
+}
+
+export interface InvitationAcceptanceInput {
+  classroomId: string;
+  invitationId: string;
+  expectedTokenDigest: string;
+  expectedTokenVersion: number;
+}
+
+export interface InvitationDeliveryOutcome {
+  status: "sent" | "failed" | "unknown";
+  provider: "capture" | "smtp";
+  providerMessageId?: string;
+  category?: "authentication_rejected" | "transport_pre_data" | "recipient_rejected" | "delivery_ambiguous";
+  retryable?: boolean;
+}
 
 export interface InvitationRepository {
   getInvitation(classroomId: string, invitationId: string): Promise<ClassroomInvite | null>;
+  inspectInvitation(principal: VerifiedPrincipal, invitationId: string): Promise<InvitationInspection>;
+  resolveInvitationForAcceptance(principal: VerifiedPrincipal, invitationId: string): Promise<InvitationInspection>;
+  listRoster(principal: VerifiedPrincipal, classroomId: string, page: RosterPagination): Promise<ClassroomRosterResponse>;
   createInvitation(
+    principal: VerifiedPrincipal,
+    input: CreateInvitationInput,
+    context: MutationContext,
+  ): Promise<ClassroomInvite>;
+  beginInvitationDelivery(
+    principal: VerifiedPrincipal,
+    classroomId: string,
+    invitationId: string,
+    provider: "capture" | "smtp",
+    context: MutationContext,
+  ): Promise<{ attemptId: string; dispatch: InvitationDispatch }>;
+  completeInvitationDelivery(
+    principal: VerifiedPrincipal,
+    classroomId: string,
+    invitationId: string,
+    attemptId: string,
+    outcome: InvitationDeliveryOutcome,
+    context: MutationContext,
+  ): Promise<ClassroomInvite>;
+  rotateInvitation(
     principal: VerifiedPrincipal,
     input: CreateInvitationInput,
     context: MutationContext,
@@ -111,8 +171,7 @@ export interface InvitationRepository {
   ): Promise<ClassroomInvite>;
   acceptInvitation(
     principal: VerifiedPrincipal,
-    classroomId: string,
-    invitationId: string,
+    input: InvitationAcceptanceInput,
     context: MutationContext,
   ): Promise<ClassroomMembership>;
 }
@@ -147,11 +206,16 @@ export type DashboardStoreErrorCode =
   | "classroom_forbidden"
   | "classroom_not_found"
   | "classroom_transition_invalid"
+  | "classroom_archived"
   | "email_index_collision"
   | "email_index_invalid"
   | "invitation_identity_collision"
   | "invitation_not_found"
   | "invitation_transition_invalid"
+  | "invitation_invalid"
+  | "idempotency_conflict"
+  | "rate_limited"
+  | "student_role_required"
   | "membership_projection_invalid"
   | "pagination_cursor_invalid"
   | "profile_exists"

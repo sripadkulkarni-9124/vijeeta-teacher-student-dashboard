@@ -245,6 +245,7 @@ function mapError(error: unknown): HttpError {
     case "bootstrap_identity_mismatch":
     case "classroom_forbidden":
     case "verified_email_required":
+    case "student_role_required":
       return new HttpError(403, "forbidden", "This action is not permitted");
     case "profile_not_found":
       return new HttpError(404, "profile_not_found", "Target profile was not found");
@@ -252,6 +253,10 @@ function mapError(error: unknown): HttpError {
       return new HttpError(404, "classroom_not_found", "Classroom was not found");
     case "invitation_not_found":
       return new HttpError(404, "invitation_not_found", "Invitation was not found");
+    case "invitation_invalid":
+      return new HttpError(404, "invitation_unavailable", "Invitation is unavailable");
+    case "rate_limited":
+      return new HttpError(429, "rate_limited", "Please wait before sending another invitation", true);
     case "pagination_cursor_invalid":
     case "reason_required":
       return new HttpError(400, "invalid_request", "Request validation failed");
@@ -259,6 +264,8 @@ function mapError(error: unknown): HttpError {
     case "teacher_transition_invalid":
     case "classroom_transition_invalid":
     case "invitation_transition_invalid":
+    case "classroom_archived":
+    case "idempotency_conflict":
       return new HttpError(409, "conflict", "The requested state transition is not available");
     case "email_index_collision":
     case "email_index_invalid":

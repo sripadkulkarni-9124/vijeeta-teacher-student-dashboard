@@ -5,6 +5,7 @@ import {
   AuditEventSchema,
   ClassroomInviteSchema,
   ClassroomMembershipSchema,
+  ClassroomRosterResponseSchema,
   ClassroomSchema,
   CreateClassroomRequestSchema,
   DashboardProfileOnboardRequestSchema,
@@ -18,6 +19,7 @@ import {
   type Classroom,
   type ClassroomInvite,
   type ClassroomMembership,
+  type ClassroomRosterResponse,
   type CreateClassroomRequest,
   type DashboardProfileOnboardRequest,
   type DashboardProfileV2,
@@ -34,10 +36,17 @@ import {
   type AdminClassroomRepository,
   type AdminInvitationRepository,
   type AuditRepository,
-  type ClassroomRepository,
+  type CreateInvitationInput,
+  type InvitationAcceptanceInput,
+  type InvitationDeliveryOutcome,
+  type InvitationDispatch,
+  type InvitationInspection,
+  type InvitationRepository,
   type MutationContext,
   type Page,
+  type PaginatedClassroomRepository,
   type ProfileRepository,
+  type RosterPagination,
 } from "./dashboard-store";
 
 const DASHBOARD_DATABASE_ID = "vijeeta-dashboard";
@@ -101,7 +110,7 @@ interface MutationResult<T> {
   event: AuditEvent | null;
 }
 
-export class FirestoreDashboardStore implements ProfileRepository, AdminRepository, AdminClassroomRepository, AdminInvitationRepository, ClassroomRepository, AuditRepository {
+export class FirestoreDashboardStore implements ProfileRepository, AdminRepository, AdminClassroomRepository, AdminInvitationRepository, PaginatedClassroomRepository, InvitationRepository, AuditRepository {
   private readonly firestore: FirestoreDashboardLike;
   private readonly auditEmitter: AuditEmitter;
   private readonly auditEmissionStatusReporter: AuditEmissionStatusReporter;
@@ -362,6 +371,20 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<Classroom>> => {
       const actor = await this.getRequiredProfile(transaction, principal.uid);
       requireActiveTeacher(actor);
+      const requestHash = createHash("sha256").update(JSON.stringify(input)).digest("hex");
+      const idempotencyReference = this.idempotencyReference(principal.uid, "classroom.create", context.correlationId);
+      const idempotencySnapshot = await transaction.get(idempotencyReference);
+      if (idempotencySnapshot.exists) {
+        const key = idempotencySnapshot.data();
+        if (!isIdempotencyKey(key, principal.uid, "classroom.create", context.correlationId, requestHash)) {
+          throw new DashboardStoreError("Idempotency key was reused for another request", "idempotency_conflict");
+        }
+        const replaySnapshot = await transaction.get(this.classroomReference(key.targetId));
+        if (!replaySnapshot.exists) throw new DashboardStoreError("Idempotency target is unavailable", "idempotency_conflict");
+        const replay = classroomFromSnapshot(replaySnapshot);
+        requireOwnedClassroom(replay, principal.uid);
+        return { value: replay, event: null };
+      }
       const classroom = ClassroomSchema.parse({
         id: this.randomUuid(),
         ownerUid: principal.uid,
@@ -371,6 +394,14 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
         updatedAt: context.now,
       });
       transaction.create(this.classroomReference(classroom.id), classroom);
+      transaction.create(idempotencyReference, {
+        actorUid: principal.uid,
+        action: "classroom.create",
+        correlationId: context.correlationId,
+        requestHash,
+        targetId: classroom.id,
+        createdAt: context.now,
+      });
       const event = this.createAuditMirror(transaction, actor, {
         action: "classroom.created",
         targetType: "classroom",
@@ -392,7 +423,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     const snapshot = await this.classroomReference(classroomId).get();
     if (!snapshot.exists) return null;
     const classroom = classroomFromSnapshot(snapshot);
-    if (profile.roles.admin === "active" || (profile.roles.teacher === "active" && classroom.ownerUid === principal.uid)) {
+    if (profile.roles.teacher === "active" && classroom.ownerUid === principal.uid) {
       return classroom;
     }
     if (profile.roles.student === "active") {
@@ -403,33 +434,47 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
   }
 
   async listForPrincipal(principalCandidate: VerifiedPrincipal): Promise<Classroom[]> {
+    const page = await this.listForPrincipalPage(principalCandidate, { limit: MAX_PAGE_SIZE });
+    return page.items;
+  }
+
+  async listForPrincipalPage(principalCandidate: VerifiedPrincipal, pageCandidate: PaginationRequest): Promise<Page<Classroom>> {
     const principal = VerifiedPrincipalSchema.parse(principalCandidate);
     const profile = await this.getProfile(principal.uid);
     if (profile === null) throw new DashboardStoreError("Profile does not exist", "profile_not_found");
-    if (profile.activeRole === "admin" && profile.roles.admin === "active") {
-      return classroomsFromQuery(await this.firestore.collection("classrooms").orderBy("updatedAt", "desc").limit(MAX_PAGE_SIZE).get());
-    }
+    const page = PaginationRequestSchema.parse(pageCandidate);
     if (profile.activeRole === "teacher" && profile.roles.teacher === "active") {
-      return classroomsFromQuery(await this.firestore.collection("classrooms")
+      const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "teacherClassrooms");
+      let query = this.firestore.collection("classrooms")
         .where("ownerUid", "==", principal.uid)
-        .orderBy("updatedAt", "desc")
-        .limit(MAX_PAGE_SIZE)
-        .get());
+        .orderBy("updatedAt", "desc").orderBy("__name__", "desc");
+      if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
+      const snapshot = await query.limit(page.limit + 1).get();
+      const items = classroomsFromQuery({ docs: snapshot.docs.slice(0, page.limit) });
+      const last = items.at(-1);
+      return { items, nextCursor: snapshot.docs.length > page.limit && last !== undefined
+        ? encodeCursor("teacherClassrooms", last.updatedAt, last.id) : null };
     }
     if (profile.activeRole === "student" && profile.roles.student === "active") {
-      const membershipSnapshot = await this.studentMembershipCollection(principal.uid)
+      const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "studentClassrooms");
+      let query = this.studentMembershipCollection(principal.uid)
         .where("status", "==", "active")
-        .orderBy("updatedAt", "desc")
-        .limit(MAX_PAGE_SIZE)
-        .get();
-      const classrooms = await Promise.all(membershipSnapshot.docs.map(async (membership) => {
+        .orderBy("updatedAt", "desc").orderBy("__name__", "desc");
+      if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
+      const membershipSnapshot = await query.limit(page.limit + 1).get();
+      const visibleMemberships = membershipSnapshot.docs.slice(0, page.limit);
+      const classrooms = await Promise.all(visibleMemberships.map(async (membership) => {
         const projection = membershipFromProjection(membership, principal.uid, membership.id);
         const classroom = await this.classroomReference(projection.classroomId).get();
         return classroom.exists ? classroomFromSnapshot(classroom) : null;
       }));
-      return classrooms.filter((classroom): classroom is Classroom => classroom !== null);
+      const items = classrooms.filter((classroom): classroom is Classroom => classroom !== null);
+      const lastMembership = visibleMemberships.at(-1);
+      const lastProjection = lastMembership === undefined ? undefined : membershipFromProjection(lastMembership, principal.uid, lastMembership.id);
+      return { items, nextCursor: membershipSnapshot.docs.length > page.limit && lastProjection !== undefined
+        ? encodeCursor("studentClassrooms", lastProjection.updatedAt, lastProjection.classroomId) : null };
     }
-    return [];
+    return { items: [], nextCursor: null };
   }
 
   async archive(
@@ -446,6 +491,354 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     context: MutationContext,
   ): Promise<Classroom> {
     return this.transitionClassroom(principalCandidate, classroomId, "archived", "active", "classroom.restored", context);
+  }
+
+  async getInvitation(classroomId: string, invitationId: string): Promise<ClassroomInvite | null> {
+    const snapshot = await this.invitationReference(classroomId, invitationId).get();
+    return snapshot.exists ? invitationFromSnapshot(snapshot) : null;
+  }
+
+  async inspectInvitation(
+    principalCandidate: VerifiedPrincipal,
+    invitationId: string,
+  ): Promise<InvitationInspection> {
+    return this.inspectInvitationState(principalCandidate, invitationId, false);
+  }
+
+  async resolveInvitationForAcceptance(
+    principalCandidate: VerifiedPrincipal,
+    invitationId: string,
+  ): Promise<InvitationInspection> {
+    return this.inspectInvitationState(principalCandidate, invitationId, true);
+  }
+
+  private async inspectInvitationState(
+    principalCandidate: VerifiedPrincipal,
+    invitationId: string,
+    allowAcceptedBySameUid: boolean,
+  ): Promise<InvitationInspection> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    requireVerifiedEmail(principal);
+    const resolved = await this.resolveInvitationById(invitationId);
+    if (resolved === null) throw invalidInvitation();
+    const invitation = resolved.invitation;
+    const acceptableStatus = invitation.status === "pending"
+      || (allowAcceptedBySameUid && invitation.status === "accepted" && invitation.acceptedUid === principal.uid);
+    if (invitation.normalizedEmail !== principal.email || !acceptableStatus || Date.parse(invitation.expiresAt) <= Date.parse(this.now())) {
+      throw invalidInvitation();
+    }
+    const classroomSnapshot = await this.classroomReference(invitation.classroomId).get();
+    if (!classroomSnapshot.exists) throw invalidInvitation();
+    const classroom = classroomFromSnapshot(classroomSnapshot);
+    if (classroom.status !== "active") throw invalidInvitation();
+    const teacher = await this.getProfile(invitation.ownerUid);
+    if (teacher === null || teacher.roles.teacher !== "active" || teacher.verifiedEmail === null) throw invalidInvitation();
+    const actor = await this.getProfile(principal.uid);
+    if (actor !== null && actor.verifiedEmail !== principal.email) throw invalidInvitation();
+    return {
+      invite: invitation,
+      classroomName: classroom.name,
+      teacherName: teacher.displayName ?? "ViJEEta teacher",
+      teacherEmail: teacher.verifiedEmail,
+      studentOnboardingRequired: actor?.roles.student !== "active",
+    };
+  }
+
+  async listRoster(
+    principalCandidate: VerifiedPrincipal,
+    classroomId: string,
+    page: RosterPagination,
+  ): Promise<ClassroomRosterResponse> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    const limit = boundedRosterLimit(page.limit);
+    const classroom = await this.requireOwnedClassroom(principal, classroomId);
+    const memberCursor = page.memberCursor === undefined ? null : decodeCursor(page.memberCursor, "rosterMembers");
+    const invitationCursor = page.invitationCursor === undefined ? null : decodeCursor(page.invitationCursor, "rosterInvitations");
+    let memberQuery = this.classroomReference(classroom.id).collection("members")
+      .orderBy("updatedAt", "desc").orderBy("__name__", "desc");
+    if (memberCursor !== null) memberQuery = memberQuery.startAfter(memberCursor.createdAt, memberCursor.id);
+    let invitationQuery = this.classroomReference(classroom.id).collection("invites")
+      .orderBy("updatedAt", "desc").orderBy("__name__", "desc");
+    if (invitationCursor !== null) invitationQuery = invitationQuery.startAfter(invitationCursor.createdAt, invitationCursor.id);
+    const [memberSnapshot, invitationSnapshot] = await Promise.all([
+      memberQuery.limit(limit + 1).get(),
+      invitationQuery.limit(limit + 1).get(),
+    ]);
+    const memberships = memberSnapshot.docs.slice(0, limit).map((snapshot) => membershipFromClassroom(snapshot, classroom.id));
+    const members = await Promise.all(memberships.map(async (membership) => {
+      const profile = await this.getProfile(membership.studentUid);
+      if (profile === null || profile.roles.student === undefined) throw new DashboardStoreError("Roster member profile is invalid", "membership_projection_invalid");
+      return { studentUid: membership.studentUid, displayName: profile.displayName, status: membership.status, joinedAt: membership.joinedAt };
+    }));
+    const invitations = invitationSnapshot.docs.slice(0, limit).map((snapshot) => {
+      const invite = invitationFromSnapshot(snapshot);
+      const projectedStatus = invite.status === "pending" && Date.parse(invite.expiresAt) <= Date.parse(this.now()) ? "expired" as const : invite.status;
+      return {
+        id: invite.id,
+        maskedEmail: maskEmail(invite.normalizedEmail),
+        expiresAt: invite.expiresAt,
+        status: projectedStatus,
+        delivery: invite.delivery,
+        ...(invite.deliveryErrorCategory === undefined ? {} : { deliveryErrorCategory: invite.deliveryErrorCategory }),
+        createdAt: invite.createdAt,
+        updatedAt: invite.updatedAt,
+      };
+    });
+    const lastMember = memberships.at(-1);
+    const lastInvitation = invitations.at(-1);
+    return ClassroomRosterResponseSchema.parse({
+      members,
+      invitations,
+      nextMemberCursor: memberSnapshot.docs.length > limit && lastMember !== undefined
+        ? encodeCursor("rosterMembers", lastMember.updatedAt, lastMember.studentUid) : null,
+      nextInvitationCursor: invitationSnapshot.docs.length > limit && lastInvitation !== undefined
+        ? encodeCursor("rosterInvitations", lastInvitation.updatedAt, lastInvitation.id) : null,
+    });
+  }
+
+  async createInvitation(
+    principalCandidate: VerifiedPrincipal,
+    input: CreateInvitationInput,
+    context: MutationContext,
+  ): Promise<ClassroomInvite> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    requireVerifiedEmail(principal);
+    assertSafeDocumentId(input.id, "Invitation ID");
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<ClassroomInvite>> => {
+      const actor = await this.getRequiredProfile(transaction, principal.uid);
+      requireActiveTeacher(actor);
+      if (actor.verifiedEmail !== principal.email) throw new DashboardStoreError("Verified email changed", "verified_email_changed");
+      const requestHash = createHash("sha256").update(JSON.stringify({ classroomId: input.classroomId, normalizedEmail: input.normalizedEmail })).digest("hex");
+      const idempotencyReference = this.idempotencyReference(principal.uid, "invite.create", context.correlationId);
+      const idempotencySnapshot = await transaction.get(idempotencyReference);
+      if (idempotencySnapshot.exists) {
+        const key = idempotencySnapshot.data();
+        if (!isInvitationIdempotencyKey(key, principal.uid, "invite.create", context.correlationId, requestHash)) {
+          throw new DashboardStoreError("Idempotency key was reused for another request", "idempotency_conflict");
+        }
+        const replaySnapshot = await transaction.get(this.invitationReference(key.classroomId, key.targetId));
+        if (!replaySnapshot.exists) throw new DashboardStoreError("Idempotency target is unavailable", "idempotency_conflict");
+        return { value: invitationFromSnapshot(replaySnapshot), event: null };
+      }
+      const classroomSnapshot = await transaction.get(this.classroomReference(input.classroomId));
+      if (!classroomSnapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
+      const classroom = classroomFromSnapshot(classroomSnapshot);
+      requireOwnedActiveClassroom(classroom, principal.uid);
+      await this.consumeInviteRateLimit(transaction, principal.uid, input.classroomId, input.normalizedEmail, context.now);
+      const invite = ClassroomInviteSchema.parse({
+        ...input,
+        ownerUid: principal.uid,
+        status: "pending",
+        delivery: "pending",
+        acceptedUid: null,
+        acceptedAt: null,
+        createdAt: context.now,
+        updatedAt: context.now,
+      });
+      transaction.create(this.invitationReference(input.classroomId, input.id), invite);
+      transaction.create(idempotencyReference, {
+        actorUid: principal.uid,
+        action: "invite.create",
+        correlationId: context.correlationId,
+        requestHash,
+        classroomId: input.classroomId,
+        targetId: input.id,
+        createdAt: context.now,
+      });
+      const event = this.createAuditMirror(transaction, actor, { action: "invite.created", targetType: "invite", targetId: input.id, context, after: changes("status", "pending") });
+      return { value: invite, event };
+    });
+    await this.emit(result.event);
+    return result.value;
+  }
+
+  async beginInvitationDelivery(
+    principalCandidate: VerifiedPrincipal,
+    classroomId: string,
+    invitationId: string,
+    provider: "capture" | "smtp",
+    context: MutationContext,
+  ): Promise<{ attemptId: string; dispatch: InvitationDispatch }> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    requireVerifiedEmail(principal);
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<{ attemptId: string; dispatch: InvitationDispatch }>> => {
+      const actor = await this.getRequiredProfile(transaction, principal.uid);
+      requireActiveTeacher(actor);
+      if (actor.verifiedEmail !== principal.email) throw new DashboardStoreError("Verified email changed", "verified_email_changed");
+      const classroomSnapshot = await transaction.get(this.classroomReference(classroomId));
+      if (!classroomSnapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
+      const classroom = classroomFromSnapshot(classroomSnapshot);
+      requireOwnedActiveClassroom(classroom, principal.uid);
+      const reference = this.invitationReference(classroomId, invitationId);
+      const snapshot = await transaction.get(reference);
+      if (!snapshot.exists) throw new DashboardStoreError("Invitation does not exist", "invitation_not_found");
+      const invite = invitationFromSnapshot(snapshot);
+      if (invite.ownerUid !== principal.uid || invite.status !== "pending" || invite.delivery !== "pending" || Date.parse(invite.expiresAt) <= Date.parse(context.now)) throw invalidInvitationTransition();
+      const attemptId = deliveryAttemptId(invite.id, invite.tokenVersion);
+      transaction.create(reference.collection("deliveryAttempts").doc(attemptId), {
+        id: attemptId, invitationId, classroomId, tokenVersion: invite.tokenVersion, provider, status: "pending", createdAt: context.now, updatedAt: context.now,
+      });
+      const event = this.createAuditMirror(transaction, actor, { action: "invite.delivery_started", targetType: "invite", targetId: invitationId, context, after: changes("delivery", "pending") });
+      return { value: { attemptId, dispatch: { invite, classroomName: classroom.name, teacherName: actor.displayName ?? "ViJEEta teacher", teacherEmail: principal.email } }, event };
+    });
+    await this.emit(result.event);
+    return result.value;
+  }
+
+  async completeInvitationDelivery(
+    principalCandidate: VerifiedPrincipal,
+    classroomId: string,
+    invitationId: string,
+    attemptId: string,
+    outcome: InvitationDeliveryOutcome,
+    context: MutationContext,
+  ): Promise<ClassroomInvite> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<ClassroomInvite>> => {
+      const actor = await this.getRequiredProfile(transaction, principal.uid);
+      requireActiveTeacher(actor);
+      const classroomSnapshot = await transaction.get(this.classroomReference(classroomId));
+      if (!classroomSnapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
+      requireOwnedActiveClassroom(classroomFromSnapshot(classroomSnapshot), principal.uid);
+      const invitationReference = this.invitationReference(classroomId, invitationId);
+      const attemptReference = invitationReference.collection("deliveryAttempts").doc(attemptId);
+      const [inviteSnapshot, attemptSnapshot] = await Promise.all([transaction.get(invitationReference), transaction.get(attemptReference)]);
+      if (!inviteSnapshot.exists || !attemptSnapshot.exists) throw invalidInvitationTransition();
+      const attempt = attemptSnapshot.data();
+      if (attempt?.status !== "pending" || attempt.invitationId !== invitationId || attempt.classroomId !== classroomId || attempt.provider !== outcome.provider) throw invalidInvitationTransition();
+      const invite = invitationFromSnapshot(inviteSnapshot);
+      if (invite.status !== "pending" || invite.delivery !== "pending") throw invalidInvitationTransition();
+      const category = outcome.status === "unknown" ? "ambiguous" : outcome.status === "failed" ? (outcome.retryable ? "retryable" : "permanent") : null;
+      const updated = ClassroomInviteSchema.parse({ ...invite, delivery: outcome.status, deliveryErrorCategory: category, updatedAt: context.now });
+      transaction.update(invitationReference, updated);
+      transaction.update(attemptReference, {
+        status: outcome.status,
+        ...(outcome.providerMessageId === undefined ? {} : { providerMessageId: boundedProviderMessageId(outcome.providerMessageId) }),
+        ...(outcome.category === undefined ? {} : { category: outcome.category }),
+        updatedAt: context.now,
+      });
+      const action = outcome.status === "sent" ? "invite.delivery_sent" : outcome.status === "failed" ? "invite.delivery_failed" : "invite.delivery_unknown";
+      const event = this.createAuditMirror(transaction, actor, { action, targetType: "invite", targetId: invitationId, context, after: changes("delivery", outcome.status) });
+      return { value: updated, event };
+    });
+    await this.emit(result.event);
+    return result.value;
+  }
+
+  async rotateInvitation(
+    principalCandidate: VerifiedPrincipal,
+    input: CreateInvitationInput,
+    context: MutationContext,
+  ): Promise<ClassroomInvite> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    requireVerifiedEmail(principal);
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<ClassroomInvite>> => {
+      const actor = await this.getRequiredProfile(transaction, principal.uid);
+      requireActiveTeacher(actor);
+      const requestHash = createHash("sha256").update(JSON.stringify({ classroomId: input.classroomId, invitationId: input.id })).digest("hex");
+      const idempotencyReference = this.idempotencyReference(principal.uid, "invite.redeliver", context.correlationId);
+      const idempotencySnapshot = await transaction.get(idempotencyReference);
+      if (idempotencySnapshot.exists) {
+        const key = idempotencySnapshot.data();
+        if (!isInvitationIdempotencyKey(key, principal.uid, "invite.redeliver", context.correlationId, requestHash)) {
+          throw new DashboardStoreError("Idempotency key was reused for another request", "idempotency_conflict");
+        }
+        const replaySnapshot = await transaction.get(this.invitationReference(key.classroomId, key.targetId));
+        if (!replaySnapshot.exists) throw new DashboardStoreError("Idempotency target is unavailable", "idempotency_conflict");
+        return { value: invitationFromSnapshot(replaySnapshot), event: null };
+      }
+      const classroomSnapshot = await transaction.get(this.classroomReference(input.classroomId));
+      if (!classroomSnapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
+      requireOwnedActiveClassroom(classroomFromSnapshot(classroomSnapshot), principal.uid);
+      const reference = this.invitationReference(input.classroomId, input.id);
+      const snapshot = await transaction.get(reference);
+      if (!snapshot.exists) throw new DashboardStoreError("Invitation does not exist", "invitation_not_found");
+      const invite = invitationFromSnapshot(snapshot);
+      if (invite.ownerUid !== principal.uid || invite.status !== "pending" || input.tokenVersion !== invite.tokenVersion + 1 || input.normalizedEmail !== invite.normalizedEmail) throw invalidInvitationTransition();
+      const currentAttempt = await transaction.get(reference.collection("deliveryAttempts").doc(deliveryAttemptId(invite.id, invite.tokenVersion)));
+      if (currentAttempt.exists && currentAttempt.data()?.status === "pending") throw invalidInvitationTransition();
+      await this.consumeInviteRateLimit(transaction, principal.uid, input.classroomId, input.normalizedEmail, context.now);
+      const updated = ClassroomInviteSchema.parse({ ...invite, tokenDigest: input.tokenDigest, tokenVersion: input.tokenVersion, expiresAt: input.expiresAt, delivery: "pending", deliveryErrorCategory: null, updatedAt: context.now });
+      transaction.update(reference, updated);
+      transaction.create(idempotencyReference, {
+        actorUid: principal.uid,
+        action: "invite.redeliver",
+        correlationId: context.correlationId,
+        requestHash,
+        classroomId: input.classroomId,
+        targetId: input.id,
+        createdAt: context.now,
+      });
+      const event = this.createAuditMirror(transaction, actor, { action: "invite.redelivered", targetType: "invite", targetId: invite.id, context, before: changes("tokenVersion", String(invite.tokenVersion)), after: changes("tokenVersion", String(updated.tokenVersion)) });
+      return { value: updated, event };
+    });
+    await this.emit(result.event);
+    return result.value;
+  }
+
+  async revokeInvitation(principalCandidate: VerifiedPrincipal, classroomId: string, invitationId: string, context: MutationContext): Promise<ClassroomInvite> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<ClassroomInvite>> => {
+      const actor = await this.getRequiredProfile(transaction, principal.uid);
+      requireActiveTeacher(actor);
+      const classroomSnapshot = await transaction.get(this.classroomReference(classroomId));
+      if (!classroomSnapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
+      requireOwnedClassroom(classroomFromSnapshot(classroomSnapshot), principal.uid);
+      const reference = this.invitationReference(classroomId, invitationId);
+      const snapshot = await transaction.get(reference);
+      if (!snapshot.exists) throw new DashboardStoreError("Invitation does not exist", "invitation_not_found");
+      const invite = invitationFromSnapshot(snapshot);
+      if (invite.status !== "pending" || invite.ownerUid !== principal.uid) throw invalidInvitationTransition();
+      const updated = ClassroomInviteSchema.parse({ ...invite, status: "revoked", updatedAt: context.now });
+      transaction.update(reference, updated);
+      const event = this.createAuditMirror(transaction, actor, { action: "invite.revoked", targetType: "invite", targetId: invite.id, context, before: changes("status", "pending"), after: changes("status", "revoked") });
+      return { value: updated, event };
+    });
+    await this.emit(result.event);
+    return result.value;
+  }
+
+  async acceptInvitation(
+    principalCandidate: VerifiedPrincipal,
+    input: InvitationAcceptanceInput,
+    context: MutationContext,
+  ): Promise<ClassroomMembership> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    requireVerifiedEmail(principal);
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<ClassroomMembership>> => {
+      const actor = await this.getRequiredProfile(transaction, principal.uid);
+      if (actor.roles.student !== "active") throw new DashboardStoreError("An active Student role is required", "student_role_required");
+      if (actor.verifiedEmail !== principal.email) throw new DashboardStoreError("Verified email changed", "verified_email_changed");
+      const emailIndex = await transaction.get(this.emailIndexReference(principal.email));
+      const index = emailIndex.data();
+      if (!emailIndex.exists || !isValidEmailIndex(index, principal.email) || index.firebaseUid !== principal.uid) throw new DashboardStoreError("Verified email index is invalid", "email_index_invalid");
+      const invitationReference = this.invitationReference(input.classroomId, input.invitationId);
+      const inviteSnapshot = await transaction.get(invitationReference);
+      if (!inviteSnapshot.exists) throw invalidInvitation();
+      const invite = invitationFromSnapshot(inviteSnapshot);
+      if (invite.classroomId !== input.classroomId || invite.id !== input.invitationId || invite.normalizedEmail !== principal.email || invite.tokenDigest !== input.expectedTokenDigest || invite.tokenVersion !== input.expectedTokenVersion || Date.parse(invite.expiresAt) <= Date.parse(context.now)) throw invalidInvitation();
+      const memberReference = this.classroomReference(input.classroomId).collection("members").doc(principal.uid);
+      const reverseReference = this.studentMembershipReference(principal.uid, input.classroomId);
+      if (invite.status === "accepted" && invite.acceptedUid === principal.uid) {
+        const [memberSnapshot, reverseSnapshot] = await Promise.all([transaction.get(memberReference), transaction.get(reverseReference)]);
+        if (!memberSnapshot.exists || !reverseSnapshot.exists) throw new DashboardStoreError("Membership projection is invalid", "membership_projection_invalid");
+        const member = membershipFromClassroom(memberSnapshot, input.classroomId);
+        membershipFromProjection(reverseSnapshot, principal.uid, input.classroomId);
+        return { value: member, event: null };
+      }
+      if (invite.status !== "pending") throw invalidInvitation();
+      const classroomSnapshot = await transaction.get(this.classroomReference(input.classroomId));
+      if (!classroomSnapshot.exists || classroomFromSnapshot(classroomSnapshot).status !== "active") throw invalidInvitation();
+      const membership = ClassroomMembershipSchema.parse({ classroomId: input.classroomId, studentUid: principal.uid, sourceInviteId: invite.id, status: "active", joinedAt: context.now, updatedAt: context.now });
+      transaction.create(memberReference, membership);
+      transaction.create(reverseReference, membership);
+      const accepted = ClassroomInviteSchema.parse({ ...invite, status: "accepted", acceptedUid: principal.uid, acceptedAt: context.now, updatedAt: context.now });
+      transaction.update(invitationReference, accepted);
+      const event = this.createAuditMirror(transaction, actor, { action: "invite.accepted", targetType: "invite", targetId: invite.id, context, after: changes("status", "accepted") });
+      return { value: membership, event };
+    });
+    await this.emit(result.event);
+    return result.value;
   }
 
   async listAuditEvents(principalCandidate: VerifiedPrincipal, pageCandidate: PaginationRequest): Promise<Page<AuditEvent>> {
@@ -729,6 +1122,37 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     return profile;
   }
 
+  private async requireOwnedClassroom(principal: VerifiedPrincipal, classroomId: string): Promise<Classroom> {
+    const profile = await this.getProfile(principal.uid);
+    if (profile === null || profile.roles.teacher !== "active") throw new DashboardStoreError("An active Teacher profile is required", "active_teacher_required");
+    const snapshot = await this.classroomReference(classroomId).get();
+    if (!snapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
+    const classroom = classroomFromSnapshot(snapshot);
+    requireOwnedClassroom(classroom, principal.uid);
+    return classroom;
+  }
+
+  private async consumeInviteRateLimit(
+    transaction: FirestoreDashboardTransaction,
+    ownerUid: string,
+    classroomId: string,
+    normalizedEmail: string,
+    now: string,
+  ): Promise<void> {
+    const reference = this.classroomReference(classroomId).collection("inviteRateLimits")
+      .doc(createHash("sha256").update(`${ownerUid}\0${normalizedEmail}`).digest("hex"));
+    const snapshot = await transaction.get(reference);
+    const data = snapshot.data();
+    const nowMs = Date.parse(now);
+    const windowStart = typeof data?.windowStart === "string" ? Date.parse(data.windowStart) : Number.NaN;
+    const inWindow = Number.isFinite(windowStart) && nowMs - windowStart < 24 * 60 * 60 * 1_000;
+    const count = inWindow && Number.isSafeInteger(data?.count) ? Number(data?.count) : 0;
+    if (count >= 5) throw new DashboardStoreError("Invitation rate limit exceeded", "rate_limited");
+    const next = { ownerUid, classroomId, normalizedEmailHash: createHash("sha256").update(normalizedEmail).digest("hex"), count: count + 1, windowStart: inWindow ? data?.windowStart : now, updatedAt: now };
+    if (snapshot.exists) transaction.set(reference, next);
+    else transaction.create(reference, next);
+  }
+
   private profileReference(firebaseUid: string): FirestoreDashboardDocumentReference {
     assertSafeDocumentId(firebaseUid, "Firebase UID");
     return this.firestore.collection("profiles").doc(firebaseUid);
@@ -755,6 +1179,11 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
 
   private studentMembershipReference(studentUid: string, classroomId: string): FirestoreDashboardDocumentReference {
     return this.studentMembershipCollection(studentUid).doc(classroomId);
+  }
+
+  private idempotencyReference(actorUid: string, action: string, correlationId: string): FirestoreDashboardDocumentReference {
+    const key = createHash("sha256").update(`${actorUid}\0${action}\0${correlationId}`).digest("hex");
+    return this.firestore.collection("mutationKeys").doc(key);
   }
 
   private auditReference(eventId: string): FirestoreDashboardDocumentReference {
@@ -834,6 +1263,19 @@ function membershipFromProjection(
   return parsed.data;
 }
 
+function membershipFromClassroom(
+  snapshot: FirestoreDashboardDocumentSnapshot,
+  expectedClassroomId: string,
+): ClassroomMembership {
+  const parsed = ClassroomMembershipSchema.safeParse(snapshot.data());
+  if (!parsed.success
+    || snapshot.id !== parsed.data.studentUid
+    || parsed.data.classroomId !== expectedClassroomId) {
+    throw new DashboardStoreError("Classroom membership is invalid", "membership_projection_invalid");
+  }
+  return parsed.data;
+}
+
 function auditFromSnapshot(snapshot: FirestoreDashboardDocumentSnapshot): AuditEvent {
   const data = snapshot.data();
   if (data === undefined) throw new Error("Persisted audit data is unavailable");
@@ -858,6 +1300,39 @@ function requireActiveTeacher(profile: DashboardProfileV2): void {
   if (profile.roles.teacher !== "active") {
     throw new DashboardStoreError("An active Teacher profile is required", "active_teacher_required");
   }
+}
+
+function requireOwnedClassroom(classroom: Classroom, ownerUid: string): void {
+  if (classroom.ownerUid !== ownerUid) throw new DashboardStoreError("Classroom is outside the verified principal scope", "classroom_forbidden");
+}
+
+function requireOwnedActiveClassroom(classroom: Classroom, ownerUid: string): void {
+  requireOwnedClassroom(classroom, ownerUid);
+  if (classroom.status !== "active") throw new DashboardStoreError("Archived classrooms cannot receive invitations", "classroom_archived");
+}
+
+function invalidInvitation(): DashboardStoreError {
+  return new DashboardStoreError("Invitation is unavailable", "invitation_invalid");
+}
+
+function invalidInvitationTransition(): DashboardStoreError {
+  return new DashboardStoreError("Invitation transition is unavailable", "invitation_transition_invalid");
+}
+
+function boundedRosterLimit(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 1 || value > MAX_PAGE_SIZE) throw new DashboardStoreError("Roster pagination is invalid", "pagination_cursor_invalid");
+  return value;
+}
+
+function maskEmail(email: string): string {
+  const separator = email.lastIndexOf("@");
+  const local = email.slice(0, separator);
+  return `${local.slice(0, 1)}***${email.slice(separator)}`;
+}
+
+function boundedProviderMessageId(value: string): string {
+  if (value.length < 1 || value.length > 240 || /[\r\n\0]/.test(value)) throw new Error("Provider message ID is invalid");
+  return value;
 }
 
 function requiredReason(context: MutationContext): string {
@@ -893,6 +1368,63 @@ function isValidEmailIndex(data: Record<string, unknown> | undefined, normalized
     && isIsoTimestamp(data.updatedAt);
 }
 
+function isIdempotencyKey(
+  data: Record<string, unknown> | undefined,
+  actorUid: string,
+  action: string,
+  correlationId: string,
+  requestHash: string,
+): data is Record<string, unknown> & { targetId: string } {
+  if (data === undefined) return false;
+  const keys = Object.keys(data).sort();
+  return keys.length === 6
+    && keys[0] === "action"
+    && keys[1] === "actorUid"
+    && keys[2] === "correlationId"
+    && keys[3] === "createdAt"
+    && keys[4] === "requestHash"
+    && keys[5] === "targetId"
+    && data.actorUid === actorUid
+    && data.action === action
+    && data.correlationId === correlationId
+    && data.requestHash === requestHash
+    && typeof data.targetId === "string"
+    && isSafeDocumentId(data.targetId)
+    && isIsoTimestamp(data.createdAt);
+}
+
+function isInvitationIdempotencyKey(
+  data: Record<string, unknown> | undefined,
+  actorUid: string,
+  action: "invite.create" | "invite.redeliver",
+  correlationId: string,
+  requestHash: string,
+): data is Record<string, unknown> & { classroomId: string; targetId: string } {
+  if (data === undefined) return false;
+  const keys = Object.keys(data).sort();
+  return keys.length === 7
+    && keys[0] === "action"
+    && keys[1] === "actorUid"
+    && keys[2] === "classroomId"
+    && keys[3] === "correlationId"
+    && keys[4] === "createdAt"
+    && keys[5] === "requestHash"
+    && keys[6] === "targetId"
+    && data.actorUid === actorUid
+    && data.action === action
+    && data.correlationId === correlationId
+    && data.requestHash === requestHash
+    && typeof data.classroomId === "string"
+    && isSafeDocumentId(data.classroomId)
+    && typeof data.targetId === "string"
+    && isSafeDocumentId(data.targetId)
+    && isIsoTimestamp(data.createdAt);
+}
+
+function deliveryAttemptId(invitationId: string, tokenVersion: number): string {
+  return `attempt-${createHash("sha256").update(`${invitationId}\0${tokenVersion}`).digest("hex").slice(0, 32)}`;
+}
+
 function isIsoTimestamp(value: unknown): value is string {
   return typeof value === "string"
     && value.length <= 64
@@ -908,7 +1440,7 @@ function timestampToIso(value: unknown): string {
   throw new Error("Persisted profile timestamp is invalid");
 }
 
-type CursorScope = "profiles" | "auditEvents" | "classrooms" | "invitations";
+type CursorScope = "profiles" | "auditEvents" | "classrooms" | "invitations" | "teacherClassrooms" | "studentClassrooms" | "rosterMembers" | "rosterInvitations";
 
 interface PageCursor {
   version: 1;
