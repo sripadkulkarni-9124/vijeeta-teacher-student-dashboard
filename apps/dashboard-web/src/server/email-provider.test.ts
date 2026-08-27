@@ -15,10 +15,11 @@ const input: InvitationEmailInput = {
   expiresAt: "2026-09-04T10:00:00.000Z",
   invitationUrl: "http://localhost:3010/invite#token=invite-1.raw-secret",
 };
+const now = () => new Date("2026-08-28T10:00:00.000Z");
 
 describe("CaptureInvitationEmailProvider", () => {
   it("captures locally without a transport and returns no token or message body", async () => {
-    const provider = new CaptureInvitationEmailProvider({ runtimeMode: "test" });
+    const provider = new CaptureInvitationEmailProvider({ runtimeMode: "test", now });
 
     const result = await provider.send(input, "attempt-1");
 
@@ -32,7 +33,7 @@ describe("CaptureInvitationEmailProvider", () => {
   });
 
   it("rejects unverified Reply-To identity, invalid email fields, unsafe names, and invalid attempts", async () => {
-    const provider = new CaptureInvitationEmailProvider({ runtimeMode: "test" });
+    const provider = new CaptureInvitationEmailProvider({ runtimeMode: "test", now });
 
     await expect(provider.send({ ...input, teacherEmailVerified: false }, "attempt-1")).rejects.toThrow(/verified/i);
     await expect(provider.send({ ...input, recipientEmail: "not-email" }, "attempt-1")).rejects.toThrow(/recipient/i);
@@ -42,12 +43,19 @@ describe("CaptureInvitationEmailProvider", () => {
   });
 
   it("normalizes only bounded one-purpose invitation fields", () => {
-    expect(validateInvitationEmailInput(input)).toEqual({
+    expect(validateInvitationEmailInput(input, { now })).toEqual({
       ...input,
       recipientEmail: "student@example.test",
       teacherEmail: "teacher@example.test",
     });
-    expect(() => validateInvitationEmailInput({ ...input, classroomName: "<script>alert(1)</script>" })).toThrow(/classroom/i);
-    expect(() => validateInvitationEmailInput({ ...input, expiresAt: "not-a-date" })).toThrow(/expiry/i);
+    expect(() => validateInvitationEmailInput({ ...input, classroomName: "<script>alert(1)</script>" }, { now })).toThrow(/classroom/i);
+    expect(() => validateInvitationEmailInput({ ...input, expiresAt: "not-a-date" }, { now })).toThrow(/expiry/i);
+  });
+
+  it("rejects an already-expired invitation using an injected clock", async () => {
+    const provider = new CaptureInvitationEmailProvider({ runtimeMode: "test", now });
+
+    await expect(provider.send({ ...input, expiresAt: "2026-08-28T09:59:59.999Z" }, "attempt-1")).rejects.toThrow(/expired/i);
+    expect(provider.captures).toHaveLength(0);
   });
 });

@@ -115,6 +115,28 @@ describe("buildInvitationAcceptanceUrl", () => {
     }
   });
 
+  it("rejects loopback, private, link-local, and internal-style production hosts", () => {
+    const rejectedHosts = [
+      "https://127.0.0.2",
+      "https://10.20.30.40",
+      "https://172.16.0.1",
+      "https://172.31.255.254",
+      "https://192.168.1.20",
+      "https://169.254.169.254",
+      "https://[::1]",
+      "https://[fc00::1]",
+      "https://[fd12:3456::1]",
+      "https://[fe80::1]",
+      "https://dashboard.local",
+      "https://dashboard.internal",
+      "https://intranet",
+    ];
+
+    for (const dashboardUrl of rejectedHosts) {
+      expect(() => buildInvitationAcceptanceUrl({ dashboardUrl, tokenFragment: TOKEN_FRAGMENT, runtimeMode: "production" })).toThrow(/dashboard/i);
+    }
+  });
+
   it("allows loopback HTTP only when local or test mode is explicit", () => {
     expect(buildInvitationAcceptanceUrl({
       dashboardUrl: "http://localhost:3010",
@@ -126,5 +148,10 @@ describe("buildInvitationAcceptanceUrl", () => {
       tokenFragment: TOKEN_FRAGMENT,
       runtimeMode: "test",
     })).toThrow(/dashboard/i);
+    expect(buildInvitationAcceptanceUrl({
+      dashboardUrl: "http://127.0.0.2:3010",
+      tokenFragment: TOKEN_FRAGMENT,
+      runtimeMode: "development",
+    })).toBe(`http://127.0.0.2:3010/invite#token=${TOKEN_FRAGMENT}`);
   });
 });

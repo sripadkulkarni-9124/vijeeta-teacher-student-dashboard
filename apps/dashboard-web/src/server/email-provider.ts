@@ -24,11 +24,17 @@ export interface CapturedInvitationEmail extends InvitationEmailInput {
   attemptId: string;
 }
 
+export interface InvitationEmailValidationOptions {
+  now?: () => Date;
+}
+
 export class CaptureInvitationEmailProvider implements InvitationEmailProvider {
   private readonly captured: CapturedInvitationEmail[] = [];
+  private readonly now: () => Date;
 
-  constructor(options: { runtimeMode: "development" | "test" | "production" }) {
+  constructor(options: { runtimeMode: "development" | "test" | "production"; now?: () => Date }) {
     if (options.runtimeMode === "production") throw new Error("Capture email provider is not allowed in production");
+    this.now = options.now ?? (() => new Date());
   }
 
   get captures(): readonly CapturedInvitationEmail[] {
@@ -37,20 +43,24 @@ export class CaptureInvitationEmailProvider implements InvitationEmailProvider {
 
   async send(input: InvitationEmailInput, attemptId: string): Promise<DeliveryResult> {
     assertAttemptId(attemptId);
-    const validated = validateInvitationEmailInput(input);
+    const validated = validateInvitationEmailInput(input, { now: this.now });
     this.captured.push({ ...validated, attemptId });
     return { status: "sent", provider: "capture", providerMessageId: messageIdForAttempt(attemptId) };
   }
 }
 
-export function validateInvitationEmailInput(input: InvitationEmailInput): InvitationEmailInput {
-  const recipientEmail = normalizeEmail(input.recipientEmail, "Recipient");
-  const teacherEmail = normalizeEmail(input.teacherEmail, "Teacher");
+export function validateInvitationEmailInput(
+  input: InvitationEmailInput,
+  options: InvitationEmailValidationOptions = {},
+): InvitationEmailInput {
+  const recipientEmail = normalizeInvitationEmail(input.recipientEmail, "Recipient");
+  const teacherEmail = normalizeInvitationEmail(input.teacherEmail, "Teacher");
   if (input.teacherEmailVerified !== true) throw new Error("Teacher Reply-To email must be server verified");
   const teacherName = validateText(input.teacherName, "Teacher name", 80, false);
   const classroomName = validateText(input.classroomName, "Classroom name", 120, true);
   const expiresAtMs = Date.parse(input.expiresAt);
   if (!Number.isFinite(expiresAtMs)) throw new Error("Invitation expiry is invalid");
+  if (expiresAtMs <= (options.now ?? (() => new Date()))().getTime()) throw new Error("Invitation has expired");
   validateInvitationUrlShape(input.invitationUrl);
   return { ...input, recipientEmail, teacherEmail, teacherName, classroomName, expiresAt: new Date(expiresAtMs).toISOString() };
 }
@@ -64,7 +74,7 @@ export function messageIdForAttempt(attemptId: string): string {
   return `<${attemptId}@vijeeta.com>`;
 }
 
-function normalizeEmail(value: string, label: string): string {
+export function normalizeInvitationEmail(value: string, label = "Invitation"): string {
   const normalized = value.trim().toLowerCase();
   if (normalized.length > 254 || !EMAIL.test(normalized)) throw new Error(`${label} email is invalid`);
   return normalized;

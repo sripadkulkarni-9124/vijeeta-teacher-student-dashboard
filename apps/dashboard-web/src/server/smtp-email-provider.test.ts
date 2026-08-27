@@ -28,8 +28,9 @@ const input = {
   expiresAt: "2026-09-04T10:00:00.000Z",
   invitationUrl: "https://dashboard.example/invite#token=invite-1.raw-secret",
 };
+const now = () => new Date("2026-08-28T10:00:00.000Z");
 
-function harness(result: unknown = { messageId: "relay-id" }) {
+function harness(result: unknown = { messageId: "relay-id", accepted: ["student@example.test"], rejected: [] }) {
   const sent: SmtpMail[] = [];
   const options: SmtpTransportOptions[] = [];
   const transport: SmtpTransport = {
@@ -41,7 +42,7 @@ function harness(result: unknown = { messageId: "relay-id" }) {
   const provider = createSmtpInvitationEmailProvider(baseConfig, (candidate) => {
     options.push(candidate);
     return transport;
-  });
+  }, { now });
   return { provider, transport, sent, options };
 }
 
@@ -95,7 +96,7 @@ describe("SMTP transport policy", () => {
     createSmtpInvitationEmailProvider({ ...baseConfig, port: 465, tlsMode: "implicit_tls" }, (candidate) => {
       options.push(candidate);
       return { sendMail: async () => ({}) };
-    });
+    }, { now });
 
     expect(options).toEqual([{
       host: "smtp.relay.example",
@@ -145,10 +146,40 @@ describe("SMTP transport policy", () => {
   });
 });
 
+describe("SMTP relay acceptance validation", () => {
+  it("accepts a case-varied affirmative list containing exactly the intended recipient", async () => {
+    const { provider } = harness({ accepted: [" STUDENT@EXAMPLE.TEST "], rejected: [] });
+
+    expect(await provider.send(input, "attempt-1")).toEqual({
+      status: "sent",
+      provider: "smtp",
+      providerMessageId: "<attempt-1@vijeeta.com>",
+    });
+  });
+
+  it.each([
+    ["missing acceptance", {}],
+    ["empty acceptance", { accepted: [], rejected: [] }],
+    ["mismatched acceptance", { accepted: ["other@example.test"], rejected: [] }],
+    ["boolean acceptance", { accepted: true, rejected: [] }],
+    ["malformed acceptance", { accepted: ["student@example.test", 42], rejected: [] }],
+    ["conflicting acceptance", { accepted: ["student@example.test"], rejected: ["student@example.test"] }],
+  ])("returns unknown for %s", async (_label, response) => {
+    const { provider } = harness(response);
+
+    expect(await provider.send(input, "attempt-1")).toEqual({
+      status: "unknown",
+      provider: "smtp",
+      category: "delivery_ambiguous",
+      retryable: false,
+    });
+  });
+});
+
 describe("SMTP outcome classification", () => {
   it("returns a definite failed result for authentication rejection", async () => {
     const transport = { sendMail: vi.fn(async () => Promise.reject(Object.assign(new Error("535 smtp-user smtp-password"), { code: "EAUTH", deliveryPhase: "auth" }))) };
-    const provider = createSmtpInvitationEmailProvider(baseConfig, () => transport);
+    const provider = createSmtpInvitationEmailProvider(baseConfig, () => transport, { now });
 
     const result = await provider.send(input, "attempt-1");
 
@@ -161,7 +192,7 @@ describe("SMTP outcome classification", () => {
 
   it("returns a definite retryable failure before DATA without exposing the provider response", async () => {
     const transport = { sendMail: vi.fn(async () => Promise.reject(Object.assign(new Error("student@example.test full SMTP response"), { code: "ECONNREFUSED", deliveryPhase: "before_data" }))) };
-    const provider = createSmtpInvitationEmailProvider(baseConfig, () => transport);
+    const provider = createSmtpInvitationEmailProvider(baseConfig, () => transport, { now });
 
     expect(await provider.send(input, "attempt-1")).toEqual({ status: "failed", provider: "smtp", category: "transport_pre_data", retryable: true });
     expect(transport.sendMail).toHaveBeenCalledTimes(1);
@@ -169,12 +200,28 @@ describe("SMTP outcome classification", () => {
 
   it("returns unknown for an ambiguous timeout after DATA may have begun and never retries internally", async () => {
     const transport = { sendMail: vi.fn(async () => Promise.reject(Object.assign(new Error("timeout after DATA raw-secret"), { code: "ETIMEDOUT", deliveryPhase: "after_data_started" }))) };
-    const provider = createSmtpInvitationEmailProvider(baseConfig, () => transport);
+    const provider = createSmtpInvitationEmailProvider(baseConfig, () => transport, { now });
 
     const result = await provider.send(input, "attempt-1");
 
     expect(result).toEqual({ status: "unknown", provider: "smtp", category: "delivery_ambiguous", retryable: false });
     expect(JSON.stringify(result)).not.toContain("raw-secret");
+    expect(transport.sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns unknown for any confirmed post-DATA error regardless of transport code", async () => {
+    const transport = { sendMail: vi.fn(async () => Promise.reject(Object.assign(new Error("relay rejected after DATA"), { code: "EOTHER", deliveryPhase: "after_data_started" }))) };
+    const provider = createSmtpInvitationEmailProvider(baseConfig, () => transport, { now });
+
+    expect(await provider.send(input, "attempt-1")).toEqual({ status: "unknown", provider: "smtp", category: "delivery_ambiguous", retryable: false });
+    expect(transport.sendMail).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["ETIMEDOUT", "ECONNRESET", "EPIPE"])("returns unknown for uncertain-phase %s without retry", async (code) => {
+    const transport = { sendMail: vi.fn(async () => Promise.reject(Object.assign(new Error("uncertain disconnect"), { code }))) };
+    const provider = createSmtpInvitationEmailProvider(baseConfig, () => transport, { now });
+
+    expect(await provider.send(input, "attempt-1")).toEqual({ status: "unknown", provider: "smtp", category: "delivery_ambiguous", retryable: false });
     expect(transport.sendMail).toHaveBeenCalledTimes(1);
   });
 });

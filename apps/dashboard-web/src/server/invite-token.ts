@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { isIP } from "node:net";
 
 const INVITE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const TOKEN_SECRET = /^[A-Za-z0-9_-]{43}$/;
@@ -105,13 +106,81 @@ export function validateDashboardBaseUrl(value: string, runtimeMode: InvitationR
   if (url.username || url.password || url.search || url.hash || url.pathname !== "/") {
     throw new Error("Dashboard URL must be a clean origin");
   }
-  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  const loopback = isLoopbackHost(url.hostname);
   if (runtimeMode === "production") {
-    if (url.protocol !== "https:" || loopback) throw new Error("Dashboard URL must be a public HTTPS origin");
+    if (url.protocol !== "https:" || loopback || !isPublicHost(url.hostname)) {
+      throw new Error("Dashboard URL must be a public HTTPS origin");
+    }
   } else if (!loopback || (url.protocol !== "http:" && url.protocol !== "https:")) {
     throw new Error("Dashboard URL must use loopback in local/test mode");
   }
   return url;
+}
+
+function isLoopbackHost(rawHostname: string): boolean {
+  const hostname = normalizeHostname(rawHostname);
+  if (hostname === "localhost" || hostname.endsWith(".localhost")) return true;
+  if (isIP(hostname) === 4) return Number(hostname.split(".")[0]) === 127;
+  if (isIP(hostname) === 6) {
+    const groups = parseIpv6(hostname);
+    return groups !== null
+      && groups.slice(0, 7).every((group) => group === 0)
+      && groups[7] === 1;
+  }
+  return false;
+}
+
+function isPublicHost(rawHostname: string): boolean {
+  const hostname = normalizeHostname(rawHostname);
+  const ipVersion = isIP(hostname);
+  if (ipVersion === 4) return !isNonPublicIpv4(hostname);
+  if (ipVersion === 6) return !isNonPublicIpv6(hostname);
+  if (!hostname.includes(".")) return false;
+  return ![".localhost", ".local", ".internal", ".localdomain", ".lan", ".home"]
+    .some((suffix) => hostname.endsWith(suffix));
+}
+
+function normalizeHostname(value: string): string {
+  return value.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
+}
+
+function isNonPublicIpv4(address: string): boolean {
+  const octets = address.split(".").map(Number);
+  const [first, second] = octets;
+  return first === 0
+    || first === 10
+    || first === 127
+    || (first === 169 && second === 254)
+    || (first === 172 && second! >= 16 && second! <= 31)
+    || (first === 192 && second === 168)
+    || (first === 100 && second! >= 64 && second! <= 127)
+    || first! >= 224;
+}
+
+function isNonPublicIpv6(address: string): boolean {
+  const groups = parseIpv6(address);
+  if (!groups) return true;
+  const allZeroPrefix = groups.slice(0, 7).every((group) => group === 0);
+  if ((allZeroPrefix && groups[7]! <= 1) || (groups[0]! & 0xfe00) === 0xfc00 || (groups[0]! & 0xffc0) === 0xfe80 || (groups[0]! & 0xff00) === 0xff00) {
+    return true;
+  }
+  const ipv4Mapped = groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff;
+  if (ipv4Mapped) {
+    const mapped = `${groups[6]! >> 8}.${groups[6]! & 0xff}.${groups[7]! >> 8}.${groups[7]! & 0xff}`;
+    return isNonPublicIpv4(mapped);
+  }
+  return false;
+}
+
+function parseIpv6(address: string): number[] | null {
+  const halves = address.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves[1] ? halves[1].split(":") : [];
+  const missing = halves.length === 2 ? 8 - left.length - right.length : 0;
+  const parts = [...left, ...Array.from({ length: missing }, () => "0"), ...right];
+  if (parts.length !== 8 || parts.some((part) => !/^[0-9a-f]{1,4}$/i.test(part))) return null;
+  return parts.map((part) => Number.parseInt(part, 16));
 }
 
 function assertInviteId(value: string): void {

@@ -1,6 +1,7 @@
 import {
   assertAttemptId,
   messageIdForAttempt,
+  normalizeInvitationEmail,
   validateInvitationEmailInput,
   type DeliveryResult,
   type InvitationEmailInput,
@@ -42,8 +43,8 @@ export interface SmtpMail {
 
 export interface SmtpTransportResponse {
   messageId?: string;
-  accepted?: boolean | string[];
-  rejected?: string[];
+  accepted?: unknown;
+  rejected?: unknown;
 }
 
 export interface SmtpTransport {
@@ -56,20 +57,27 @@ class SmtpInvitationEmailProvider implements InvitationEmailProvider {
   constructor(
     private readonly publicOrigin: string,
     private readonly transport: SmtpTransport,
+    private readonly now: () => Date,
   ) {}
 
   async send(candidate: InvitationEmailInput, attemptId: string): Promise<DeliveryResult> {
     assertAttemptId(attemptId);
-    const input = validateInvitationEmailInput(candidate);
+    const input = validateInvitationEmailInput(candidate, { now: this.now });
     assertMatchingInvitationUrl(input.invitationUrl, this.publicOrigin);
     const messageId = messageIdForAttempt(attemptId);
     const mail = composeMail(input, messageId);
 
     try {
       const response = await this.transport.sendMail(mail);
-      if (response.accepted === false || (Array.isArray(response.rejected) && response.rejected.length > 0)) {
+      const accepted = normalizeRelayAddresses(response.accepted);
+      const rejected = response.rejected === undefined ? [] : normalizeRelayAddresses(response.rejected);
+      if (accepted === null || rejected === null) return ambiguousDelivery();
+      const acceptedIntended = accepted.length === 1 && accepted[0] === input.recipientEmail;
+      const rejectedIntended = rejected.length === 1 && rejected[0] === input.recipientEmail;
+      if (accepted.length === 0 && rejectedIntended) {
         return { status: "failed", provider: "smtp", category: "recipient_rejected", retryable: false };
       }
+      if (!acceptedIntended || rejected.length !== 0) return ambiguousDelivery();
       return { status: "sent", provider: "smtp", providerMessageId: messageId };
     } catch (error) {
       return classifyTransportFailure(error);
@@ -80,6 +88,7 @@ class SmtpInvitationEmailProvider implements InvitationEmailProvider {
 export function createSmtpInvitationEmailProvider(
   config: SmtpInvitationConfig,
   createTransport: SmtpTransportFactory,
+  options: { now?: () => Date } = {},
 ): InvitationEmailProvider {
   const validated = validateSmtpConfig(config);
   let transport: SmtpTransport;
@@ -95,7 +104,7 @@ export function createSmtpInvitationEmailProvider(
   } catch {
     throw new Error("SMTP transport initialization failed");
   }
-  return new SmtpInvitationEmailProvider(validated.publicOrigin, transport);
+  return new SmtpInvitationEmailProvider(validated.publicOrigin, transport, options.now ?? (() => new Date()));
 }
 
 function validateSmtpConfig(config: SmtpInvitationConfig): SmtpInvitationConfig & { publicOrigin: string } {
@@ -171,12 +180,32 @@ function classifyTransportFailure(error: unknown): DeliveryResult {
     ? error as { code?: unknown; deliveryPhase?: unknown }
     : {};
   const code = typeof candidate.code === "string" ? candidate.code.toUpperCase() : "";
+  if (candidate.deliveryPhase === "after_data_started") return ambiguousDelivery();
   if (candidate.deliveryPhase === "auth" || code === "EAUTH") {
     return { status: "failed", provider: "smtp", category: "authentication_rejected", retryable: false };
   }
-  const ambiguousDisconnect = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNABORTED", "EPIPE"]);
-  if (candidate.deliveryPhase === "after_data_started" && ambiguousDisconnect.has(code)) {
-    return { status: "unknown", provider: "smtp", category: "delivery_ambiguous", retryable: false };
+  if (candidate.deliveryPhase === "before_data") {
+    return { status: "failed", provider: "smtp", category: "transport_pre_data", retryable: true };
   }
-  return { status: "failed", provider: "smtp", category: "transport_pre_data", retryable: true };
+  const ambiguousDisconnect = new Set(["ETIMEDOUT", "ECONNRESET", "ECONNABORTED", "EPIPE"]);
+  if (ambiguousDisconnect.has(code)) return ambiguousDelivery();
+  return ambiguousDelivery();
+}
+
+function normalizeRelayAddresses(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const normalized: string[] = [];
+  for (const candidate of value) {
+    if (typeof candidate !== "string") return null;
+    try {
+      normalized.push(normalizeInvitationEmail(candidate, "Relay response"));
+    } catch {
+      return null;
+    }
+  }
+  return normalized;
+}
+
+function ambiguousDelivery(): DeliveryResult {
+  return { status: "unknown", provider: "smtp", category: "delivery_ambiguous", retryable: false };
 }
