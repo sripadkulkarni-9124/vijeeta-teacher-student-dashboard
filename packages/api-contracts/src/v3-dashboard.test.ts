@@ -11,8 +11,6 @@ describe("V3 dashboard BFF contracts", () => {
     expect(V3_READ_PATHS).toEqual(expect.arrayContaining([
       "/v3/shared/mode",
       "/v3/shared/tests",
-      "/v3/shared-web/resolve/{token}",
-      "/v3/shared-web/enter/{token}",
       "/v3/test/{id}",
       "/v3/test/{id}/review",
       "/v3/test/{id}/analysis",
@@ -22,10 +20,16 @@ describe("V3 dashboard BFF contracts", () => {
       "/v3/paperdesk/config",
       "/v3/paperdesk/jobs",
       "/v3/paperdesk/jobs/{id}",
-      "/v3/paperdesk/shares/{sid}/results",
-      "/v3/paperdesk/shares/{sid}/student/{uid}/analysis",
     ]));
     expect(V3_READ_PATHS).not.toContain("/v3/paperdesk/shares");
+    expect(V3_READ_PATHS).not.toContain("/v3/shared-web/enter/{token}");
+    expect(V3_READ_PATHS).not.toContain("/v3/shared-web/resolve/{token}");
+    expect(V3_READ_PATHS).not.toContain("/v3/paperdesk/shares/{sid}/results");
+    expect(V3_READ_PATHS).not.toContain("/v3/paperdesk/shares/{sid}/student/{uid}/analysis");
+    expect(() => parseV3ReadRoute(["shared-web", "enter", "opaque-token"], new URLSearchParams())).toThrow();
+    expect(() => parseV3ReadRoute(["shared-web", "resolve", "opaque-token"], new URLSearchParams())).toThrow();
+    expect(() => parseV3ReadRoute(["paperdesk", "shares", "sid", "results"], new URLSearchParams())).toThrow();
+    expect(() => parseV3ReadRoute(["paperdesk", "shares", "sid", "student", "uid", "analysis"], new URLSearchParams())).toThrow();
     expect(() => parseV3ReadRoute(["paperdesk", "jobs", "x", "submit"], new URLSearchParams())).toThrow();
     expect(() => parseV3ReadRoute(["paperdesk", "shares"], new URLSearchParams())).toThrow();
   });

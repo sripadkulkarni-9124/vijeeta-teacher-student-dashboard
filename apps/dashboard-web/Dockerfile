@@ -22,7 +22,7 @@ RUN pnpm install --frozen-lockfile
 
 FROM dependencies AS builder
 
-ARG NEXT_PUBLIC_DASHBOARD_MODE=v3-proxy
+ARG NEXT_PUBLIC_DASHBOARD_MODE
 ARG NEXT_PUBLIC_FIREBASE_API_KEY
 ARG NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN
 ARG NEXT_PUBLIC_FIREBASE_PROJECT_ID
@@ -33,6 +33,15 @@ ENV NEXT_PUBLIC_FIREBASE_API_KEY=${NEXT_PUBLIC_FIREBASE_API_KEY}
 ENV NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}
 ENV NEXT_PUBLIC_FIREBASE_PROJECT_ID=${NEXT_PUBLIC_FIREBASE_PROJECT_ID}
 ENV NEXT_PUBLIC_FIREBASE_APP_ID=${NEXT_PUBLIC_FIREBASE_APP_ID}
+
+# Fail the image build rather than producing a fixture-mode or cross-project
+# browser bundle. The API key is public Firebase web configuration, but is
+# intentionally supplied by the build environment and never written here.
+RUN test "${NEXT_PUBLIC_DASHBOARD_MODE}" = "v3-proxy" \
+  && test -n "${NEXT_PUBLIC_FIREBASE_API_KEY}" \
+  && test "${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}" = "neetcompanion-50b1f.firebaseapp.com" \
+  && test "${NEXT_PUBLIC_FIREBASE_PROJECT_ID}" = "neetcompanion-50b1f" \
+  && test "${NEXT_PUBLIC_FIREBASE_APP_ID}" = "1:840759107103:web:84391539f65c7aa4abff2a"
 
 COPY packages packages
 COPY apps/dashboard-web/package.json apps/dashboard-web/package.json

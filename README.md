@@ -38,7 +38,7 @@ The API smoke test is `apps/dashboard-web/src/test/local-e2e-smoke.test.ts`. It 
 
 ## Deployment status
 
-Deployment is approval-gated and currently paused pending the identity and data-store review. The local demo and its container are fixture-mode only; no cloud resource, service account, Firestore database, or existing Vijeeta service is changed by this repository.
+Deployment is approval-gated and currently paused pending the identity and data-store review. The local demo is fixture-mode only; the production container is an explicitly validated `v3-proxy` build that requires approved Firebase public configuration and server/read dependencies. No cloud resource, service account, Firestore database, or existing Vijeeta service is changed by this repository.
 
 The proposed production boundary is documented in [docs/deploy-vijeeta-dashboard.md](docs/deploy-vijeeta-dashboard.md). It requires a new named Firestore database, a dedicated server runtime identity, and explicit approval for database creation and IAM before any cloud write. Do not infer production readiness from a successful local build.
 

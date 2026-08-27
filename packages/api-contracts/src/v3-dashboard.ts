@@ -4,8 +4,6 @@ import { DashboardRoleSchema } from "./dashboard";
 export const V3_READ_PATHS = [
   "/v3/shared/mode",
   "/v3/shared/tests",
-  "/v3/shared-web/resolve/{token}",
-  "/v3/shared-web/enter/{token}",
   "/v3/test/{id}",
   "/v3/test/{id}/review",
   "/v3/test/{id}/analysis",
@@ -15,8 +13,6 @@ export const V3_READ_PATHS = [
   "/v3/paperdesk/config",
   "/v3/paperdesk/jobs",
   "/v3/paperdesk/jobs/{id}",
-  "/v3/paperdesk/shares/{sid}/results",
-  "/v3/paperdesk/shares/{sid}/student/{uid}/analysis",
 ] as const;
 
 export type V3ReadPath = (typeof V3_READ_PATHS)[number];
@@ -64,7 +60,7 @@ function queryFor(query: URLSearchParams, allowed: readonly string[], required: 
 export function parseV3ReadRoute(rawSegments: readonly string[], query: URLSearchParams): V3ReadRoute {
   const segments = rawSegments[0] === "v3" ? rawSegments.slice(1) : rawSegments;
   if (segments.some((segment) => !segment || segment === "." || segment === ".." || segment.includes("/"))) throw new V3RouteValidationError("Invalid path");
-  const [a, b, c, d] = segments;
+  const [a, b, c] = segments;
   const params: Record<string, string> = {};
   let path: V3ReadPath;
   let allowed: readonly string[] = [];
@@ -72,8 +68,6 @@ export function parseV3ReadRoute(rawSegments: readonly string[], query: URLSearc
 
   if (a === "shared" && (b === "mode" || b === "tests") && segments.length === 2) {
     path = `/v3/shared/${b}` as V3ReadPath;
-  } else if (a === "shared-web" && (b === "resolve" || b === "enter") && segments.length === 3) {
-    params.token = requiredId(c, "token"); path = `/v3/shared-web/${b}/{token}` as V3ReadPath;
   } else if (a === "test" && segments.length >= 2 && (b === "" || b === undefined)) {
     throw new V3RouteValidationError("Invalid test id");
   } else if (a === "test" && segments.length === 2) {
@@ -88,10 +82,6 @@ export function parseV3ReadRoute(rawSegments: readonly string[], query: URLSearc
     path = "/v3/paperdesk/jobs"; allowed = ["page", "page_size"];
   } else if (a === "paperdesk" && b === "jobs" && segments.length === 3) {
     params.id = requiredId(c, "job id"); path = "/v3/paperdesk/jobs/{id}";
-  } else if (a === "paperdesk" && b === "shares" && segments.length === 4 && d === "results") {
-    params.sid = requiredId(c, "share id"); path = "/v3/paperdesk/shares/{sid}/results";
-  } else if (a === "paperdesk" && b === "shares" && segments.length === 6 && d === "student" && segments[5] === "analysis") {
-    params.sid = requiredId(c, "share id"); params.uid = requiredId(segments[4], "student id"); path = "/v3/paperdesk/shares/{sid}/student/{uid}/analysis";
   } else {
     throw new V3RouteValidationError("Unsupported V3 read path");
   }

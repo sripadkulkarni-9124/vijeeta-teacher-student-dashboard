@@ -1,12 +1,32 @@
 import { DashboardRoleSchema, ProfileOnboardRequestSchema, type V3Problem } from "@vijeeta/api-contracts";
 import { bearerToken, ProfileStoreError, TokenVerificationError, type ProfileStore, type TokenVerifier } from "../../../server/profile-store";
 import { getProductionFirebaseRuntime } from "../../../server/firebase-runtime";
+import { loadRuntimeConfig } from "../../../server/runtime-config";
+import { V3ReadAdapter } from "../../../server/v3-read-adapter";
 
-let configured: { profiles: ProfileStore; verifier: TokenVerifier } | undefined;
+interface TeacherEligibility {
+  verify(authorization: string): Promise<boolean>;
+}
+
+interface ProfileDependencies {
+  profiles: ProfileStore;
+  verifier: TokenVerifier;
+  teacherEligibility?: TeacherEligibility;
+}
+
+let configured: ProfileDependencies | undefined;
 
 async function dependencies() {
   if (configured) return configured;
-  try { return await getProductionFirebaseRuntime(); } catch { return undefined; }
+  try {
+    const config = loadRuntimeConfig();
+    const firebase = await getProductionFirebaseRuntime(config);
+    const adapter = new V3ReadAdapter({ baseUrl: config.baseUrl, timeoutMs: config.timeoutMs });
+    return {
+      ...firebase,
+      teacherEligibility: createTeacherEligibility(adapter),
+    };
+  } catch { return undefined; }
 }
 function response(problem: V3Problem, status: number) { return Response.json({ problem }, { status, headers: { "cache-control": "no-store" } }); }
 function unauthorized() { return response({ code: "unauthorized", message: "Firebase authentication required" }, 401); }
@@ -48,6 +68,13 @@ export async function POST(request: Request): Promise<Response> {
   }
   let body: { role: "teacher" | "student" };
   try { body = ProfileOnboardRequestSchema.parse(await request.json()); } catch (error) { return validation(error); }
+  if (body.role === "teacher") {
+    if (!deps.teacherEligibility) return response({ code: "upstream_unavailable", message: "Teacher eligibility service unavailable" }, 503);
+    let eligible: boolean;
+    try { eligible = await deps.teacherEligibility.verify(bearerToken(request.headers.get("authorization"))); }
+    catch { return response({ code: "upstream_unavailable", message: "Teacher eligibility service unavailable" }, 503); }
+    if (!eligible) return response({ code: "forbidden", message: "Teacher onboarding requires authoritative access" }, 403);
+  }
   try {
     const profile = await deps.profiles.onboard(uid, DashboardRoleSchema.parse(body.role));
     return Response.json(profile, { status: 201, headers: { "cache-control": "no-store" } });
@@ -57,5 +84,16 @@ export async function POST(request: Request): Promise<Response> {
   }
 }
 
-export function configureProfileForTests(deps: { profiles: ProfileStore; verifier: TokenVerifier }): void { configured = deps; }
+export function configureProfileForTests(deps: ProfileDependencies): void { configured = deps; }
 export function resetProfileForTests(): void { configured = undefined; }
+
+export function createTeacherEligibility(adapter: Pick<V3ReadAdapter, "read">): TeacherEligibility {
+  return {
+    verify: async (authorization: string) => {
+      const upstream = await adapter.read({ path: "/v3/paperdesk/config", query: new URLSearchParams(), authorization });
+      if (upstream.ok) return true;
+      if (upstream.status === 401 || upstream.status === 403) return false;
+      throw new Error("Teacher eligibility service unavailable");
+    },
+  };
+}

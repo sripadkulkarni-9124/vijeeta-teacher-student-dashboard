@@ -28,4 +28,30 @@ describe("V3ReadAdapter", () => {
     expect(response.status).toBe(502);
     expect(await response.text()).not.toContain("backend stack");
   });
+
+  it("rejects a successful response without an application/json content type", async () => {
+    const adapter = new V3ReadAdapter({ baseUrl: new URL("https://v3.example.test"), fetchImpl: async () => new Response("secret payload", { status: 200 }) });
+    const response = await adapter.read({ path: "/v3/shared/mode", query: new URLSearchParams(), authorization: "Bearer firebase-token" });
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain("secret payload");
+  });
+
+  it("rejects a successful response whose body is not valid JSON", async () => {
+    const adapter = new V3ReadAdapter({ baseUrl: new URL("https://v3.example.test"), fetchImpl: async () => new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }) });
+    const response = await adapter.read({ path: "/v3/shared/mode", query: new URLSearchParams(), authorization: "Bearer firebase-token" });
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain("not-json");
+  });
+
+  it("rejects a response whose content-length exceeds the hard limit", async () => {
+    const adapter = new V3ReadAdapter({ baseUrl: new URL("https://v3.example.test"), maxResponseBytes: 8, fetchImpl: async () => new Response("123456789", { status: 200, headers: { "content-type": "application/json", "content-length": "9" } }) });
+    const response = await adapter.read({ path: "/v3/shared/mode", query: new URLSearchParams(), authorization: "Bearer firebase-token" });
+    expect(response.status).toBe(502);
+  });
+
+  it("enforces the response limit while reading chunked bodies", async () => {
+    const adapter = new V3ReadAdapter({ baseUrl: new URL("https://v3.example.test"), maxResponseBytes: 8, fetchImpl: async () => new Response("123456789", { status: 200, headers: { "content-type": "application/json" } }) });
+    const response = await adapter.read({ path: "/v3/shared/mode", query: new URLSearchParams(), authorization: "Bearer firebase-token" });
+    expect(response.status).toBe(502);
+  });
 });

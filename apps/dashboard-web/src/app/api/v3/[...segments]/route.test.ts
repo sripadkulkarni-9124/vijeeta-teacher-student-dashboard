@@ -10,6 +10,20 @@ describe("V3 read-only BFF route", () => {
     expect(response.status).toBe(401);
   });
 
+  it("blocks capability-bearing shared-web enter and resolve paths", async () => {
+    const enter = await GET(new Request("http://localhost/api/v3/shared-web/enter/token", { headers: { authorization: "Bearer real" } }), { params: Promise.resolve({ segments: ["shared-web", "enter", "token"] }) });
+    const resolve = await GET(new Request("http://localhost/api/v3/shared-web/resolve/token", { headers: { authorization: "Bearer real" } }), { params: Promise.resolve({ segments: ["shared-web", "resolve", "token"] }) });
+    expect(enter.status).toBe(400);
+    expect(resolve.status).toBe(400);
+  });
+
+  it("blocks PaperDesk share result paths without dashboard membership", async () => {
+    const results = await GET(new Request("http://localhost/api/v3/paperdesk/shares/sid/results", { headers: { authorization: "Bearer real" } }), { params: Promise.resolve({ segments: ["paperdesk", "shares", "sid", "results"] }) });
+    const studentAnalysis = await GET(new Request("http://localhost/api/v3/paperdesk/shares/sid/student/uid/analysis", { headers: { authorization: "Bearer real" } }), { params: Promise.resolve({ segments: ["paperdesk", "shares", "sid", "student", "uid", "analysis"] }) });
+    expect(results.status).toBe(400);
+    expect(studentAnalysis.status).toBe(400);
+  });
+
   it("enforces verified profile role/path permissions", async () => {
     const profiles = new InMemoryProfileStore();
     await profiles.onboard("student-uid", "student");
@@ -53,6 +67,26 @@ describe("V3 read-only BFF route", () => {
     configureV3ForTests({ profiles: teacherProfiles, verifier: { verify: async () => ({ uid: "teacher-uid" }) }, adapter: { read: async () => new Response("ok") } });
     const teacherStudentRoute = await GET(new Request("http://localhost/api/v3/shared/tests", { headers: { authorization: "Bearer real" } }), { params: Promise.resolve({ segments: ["shared", "tests"] }) });
     expect(teacherStudentRoute.status).toBe(403);
+  });
+
+  it("rejects a student review or analysis request for another Firebase UID", async () => {
+    const profiles = new InMemoryProfileStore();
+    await profiles.onboard("student-uid", "student");
+    configureV3ForTests({
+      profiles,
+      verifier: { verify: async () => ({ uid: "student-uid" }) },
+      adapter: { read: async () => new Response("unexpected") },
+    });
+
+    for (const leaf of ["review", "analysis"]) {
+      const response = await GET(
+        new Request(`http://localhost/api/v3/test/test-1/${leaf}?user_id=other-uid`, {
+          headers: { authorization: "Bearer real" },
+        }),
+        { params: Promise.resolve({ segments: ["test", "test-1", leaf] }) },
+      );
+      expect(response.status).toBe(403);
+    }
   });
 
   it("returns 503 when production verifier/profile dependencies are not configured", async () => {

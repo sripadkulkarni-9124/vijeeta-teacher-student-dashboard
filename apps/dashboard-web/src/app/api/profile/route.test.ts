@@ -1,13 +1,36 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { configureProfileForTests, GET, POST, resetProfileForTests } from "./route";
+import { configureProfileForTests, createTeacherEligibility, GET, POST, resetProfileForTests } from "./route";
 import { InMemoryProfileStore, TokenVerificationError } from "../../../server/profile-store";
 
 afterEach(() => { resetProfileForTests(); });
 
 describe("profile routes", () => {
+  it("checks teacher authority only through the allowlisted PaperDesk config read", async () => {
+    const reads: Array<{ path: string; authorization: string; query: URLSearchParams }> = [];
+    const eligibility = createTeacherEligibility({
+      read: async (input) => { reads.push(input); return new Response("ok", { status: 200 }); },
+    });
+
+    await expect(eligibility.verify("Bearer verified-token")).resolves.toBe(true);
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toEqual({
+      path: "/v3/paperdesk/config",
+      query: expect.any(URLSearchParams),
+      authorization: "Bearer verified-token",
+    });
+    expect(reads[0].query.toString()).toBe("");
+
+    await expect(createTeacherEligibility({ read: async () => new Response(null, { status: 403 }) }).verify("Bearer denied")).resolves.toBe(false);
+    await expect(createTeacherEligibility({ read: async () => new Response(null, { status: 502 }) }).verify("Bearer unavailable")).rejects.toThrow("unavailable");
+  });
+
   it("binds first-login onboarding to the verified token UID", async () => {
     const profiles = new InMemoryProfileStore();
-    configureProfileForTests({ profiles, verifier: { verify: async () => ({ uid: "verified-uid" }) } });
+    configureProfileForTests({
+      profiles,
+      verifier: { verify: async () => ({ uid: "verified-uid" }) },
+      teacherEligibility: { verify: async () => true },
+    });
     const response = await POST(new Request("http://localhost/api/profile/onboard", { method: "POST", headers: { authorization: "Bearer real", "content-type": "application/json" }, body: JSON.stringify({ role: "teacher", firebaseUid: "forged" }) }));
     expect(response.status).toBe(400);
     const created = await POST(new Request("http://localhost/api/profile/onboard", { method: "POST", headers: { authorization: "Bearer real", "content-type": "application/json" }, body: JSON.stringify({ role: "teacher" }) }));
@@ -15,6 +38,62 @@ describe("profile routes", () => {
     expect((await created.json()).firebaseUid).toBe("verified-uid");
     const read = await GET(new Request("http://localhost/api/profile", { headers: { authorization: "Bearer real" } }));
     expect(read.status).toBe(200);
+  });
+
+  it("requires authoritative PaperDesk eligibility before teacher onboarding", async () => {
+    const profiles = new InMemoryProfileStore();
+    const checked: string[] = [];
+    configureProfileForTests({
+      profiles,
+      verifier: { verify: async () => ({ uid: "verified-teacher" }) },
+      teacherEligibility: { verify: async (authorization) => { checked.push(authorization); return false; } },
+    });
+
+    const response = await POST(new Request("http://localhost/api/profile", {
+      method: "POST",
+      headers: { authorization: "Bearer verified-token", "content-type": "application/json" },
+      body: JSON.stringify({ role: "teacher" }),
+    }));
+
+    expect(response.status).toBe(403);
+    expect(checked).toEqual(["Bearer verified-token"]);
+    expect(await profiles.getByFirebaseUid("verified-teacher")).toBeNull();
+  });
+
+  it("allows student onboarding without granting or probing teacher authority", async () => {
+    const profiles = new InMemoryProfileStore();
+    let teacherChecks = 0;
+    configureProfileForTests({
+      profiles,
+      verifier: { verify: async () => ({ uid: "verified-student" }) },
+      teacherEligibility: { verify: async () => { teacherChecks += 1; return false; } },
+    });
+
+    const response = await POST(new Request("http://localhost/api/profile", {
+      method: "POST",
+      headers: { authorization: "Bearer student-token", "content-type": "application/json" },
+      body: JSON.stringify({ role: "student" }),
+    }));
+
+    expect(response.status).toBe(201);
+    expect(teacherChecks).toBe(0);
+    expect((await response.json()).allowedRoles).toEqual(["student"]);
+  });
+
+  it("fails teacher onboarding with 503 when the authority check is unavailable", async () => {
+    const profiles = new InMemoryProfileStore();
+    configureProfileForTests({
+      profiles,
+      verifier: { verify: async () => ({ uid: "verified-teacher" }) },
+      teacherEligibility: { verify: async () => { throw new Error("V3 unavailable"); } },
+    });
+    const response = await POST(new Request("http://localhost/api/profile", {
+      method: "POST",
+      headers: { authorization: "Bearer teacher-token", "content-type": "application/json" },
+      body: JSON.stringify({ role: "teacher" }),
+    }));
+    expect(response.status).toBe(503);
+    expect(await profiles.getByFirebaseUid("verified-teacher")).toBeNull();
   });
 
   it("returns 401 when Firebase rejects the ID token", async () => {
