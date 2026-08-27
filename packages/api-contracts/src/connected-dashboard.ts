@@ -6,7 +6,7 @@ const MAX_PAGE_SIZE = 100;
 const MAX_RECIPIENTS = 500;
 
 const IdentifierSchema = z.string().min(1).max(MAX_ID_LENGTH);
-const IsoTimestampSchema = z.string().datetime({ offset: true });
+const IsoTimestampSchema = z.string().max(64).datetime({ offset: true });
 const NormalizedEmailSchema = z.string().email().max(MAX_EMAIL_LENGTH).refine(
   (value) => value === value.trim().toLowerCase(),
   "Email must be normalized",
@@ -210,6 +210,22 @@ export const AuditActionSchema = z.enum([
 ]);
 export type AuditAction = z.infer<typeof AuditActionSchema>;
 
+export const RedactedAuditChangeEntrySchema = z.object({
+  field: z.string().min(1).max(64),
+  value: z.string().max(240).nullable(),
+}).strict();
+export type RedactedAuditChangeEntry = z.infer<typeof RedactedAuditChangeEntrySchema>;
+
+export const RedactedAuditChangeSetSchema = z.object({
+  count: z.number().int().nonnegative().max(50),
+  entries: z.array(RedactedAuditChangeEntrySchema).max(50),
+}).strict().superRefine((changes, context) => {
+  if (changes.count !== changes.entries.length) {
+    context.addIssue({ code: "custom", message: "count must equal the number of entries", path: ["count"] });
+  }
+});
+export type RedactedAuditChangeSet = z.infer<typeof RedactedAuditChangeSetSchema>;
+
 export const AuditEventSchema = z.object({
   id: IdentifierSchema,
   actorUid: IdentifierSchema,
@@ -219,8 +235,8 @@ export const AuditEventSchema = z.object({
   targetId: IdentifierSchema,
   reason: BoundedTextSchema(500).nullable(),
   correlationId: z.string().uuid(),
-  before: z.record(z.string().max(64), z.string().max(240)).optional(),
-  after: z.record(z.string().max(64), z.string().max(240)).optional(),
+  before: RedactedAuditChangeSetSchema.optional(),
+  after: RedactedAuditChangeSetSchema.optional(),
   canonicalLogInsertId: z.string().min(1).max(128),
   createdAt: IsoTimestampSchema,
 }).strict();
@@ -301,9 +317,39 @@ export type ClassroomAssignmentListResponse = z.infer<typeof ClassroomAssignment
 
 export const AssignmentLaunchResponseSchema = z.object({ runnerPath: z.string().startsWith("/").max(512) }).strict();
 export type AssignmentLaunchResponse = z.infer<typeof AssignmentLaunchResponseSchema>;
+export const AssignmentAggregateInsightSchema = z.object({
+  attempted: z.number().int().nonnegative().max(MAX_RECIPIENTS),
+  pending: z.number().int().nonnegative().max(MAX_RECIPIENTS),
+  averageScore: z.number().finite().nonnegative().max(1_000_000),
+}).strict();
+export type AssignmentAggregateInsight = z.infer<typeof AssignmentAggregateInsightSchema>;
+
+export const AssignmentIndividualInsightSchema = z.object({
+  uid: IdentifierSchema,
+  displayName: BoundedTextSchema(160),
+  score: z.number().finite().nonnegative().max(1_000_000).nullable(),
+  status: z.enum(["attempted", "pending"]),
+}).strict();
+export type AssignmentIndividualInsight = z.infer<typeof AssignmentIndividualInsightSchema>;
+
+export const AssignmentPersonalInsightSchema = z.object({
+  attempted: z.number().int().nonnegative().max(MAX_RECIPIENTS),
+  averageScore: z.number().finite().nonnegative().max(1_000_000),
+  score: z.number().finite().nonnegative().max(1_000_000),
+  latestScore: z.number().finite().nonnegative().max(1_000_000).nullable(),
+}).strict();
+export type AssignmentPersonalInsight = z.infer<typeof AssignmentPersonalInsightSchema>;
+
 export const AssignmentInsightsResponseSchema = z.object({
   freshness: IsoTimestampSchema,
-  insights: z.object({ aggregate: z.unknown().optional(), personal: z.unknown().optional() }).strict(),
+  insights: z.object({
+    aggregate: AssignmentAggregateInsightSchema.optional(),
+    individual: AssignmentIndividualInsightSchema.optional(),
+    personal: AssignmentPersonalInsightSchema.optional(),
+  }).strict().refine(
+    (insights) => insights.aggregate !== undefined || insights.individual !== undefined || insights.personal !== undefined,
+    "At least one projected insight is required",
+  ),
 }).strict();
 export type AssignmentInsightsResponse = z.infer<typeof AssignmentInsightsResponseSchema>;
 export const ReconcileAssignmentRequestSchema = z.object({

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   AdminBootstrapConfigSchema,
   ApiErrorSchema,
+  AssignmentInsightsResponseSchema,
+  AuditEventSchema,
   ClassroomAssignmentSchema,
   ClassroomInviteSchema,
   ClassroomSchema,
@@ -110,6 +112,64 @@ describe("connected dashboard contracts", () => {
       createdAt: timestamp,
       updatedAt: timestamp,
       rawToken: "not-persisted",
+    })).toThrow();
+  });
+
+  it("rejects opaque insight payloads instead of passing through upstream data", () => {
+    expect(() => AssignmentInsightsResponseSchema.parse({
+      freshness: timestamp,
+      insights: {
+        aggregate: {
+          attempted: 1,
+          pending: 0,
+          averageScore: 84,
+          upstreamPayload: { answers: ["private answer"] },
+        },
+      },
+    })).toThrow();
+  });
+
+  it("bounds redacted audit changes", () => {
+    const event = {
+      id: "audit-1",
+      actorUid: "admin-1",
+      actorProfileId: "profile-1",
+      action: "teacher.approved",
+      targetType: "profile",
+      targetId: "teacher-1",
+      reason: "Reviewed eligibility.",
+      correlationId: "123e4567-e89b-12d3-a456-426614174000",
+      canonicalLogInsertId: "log-1",
+      createdAt: timestamp,
+    };
+
+    expect(() => AuditEventSchema.parse({
+      ...event,
+      before: { count: 1, entries: [{ field: "status", value: "x".repeat(241) }] },
+    })).toThrow();
+    expect(() => AuditEventSchema.parse({
+      ...event,
+      after: {
+        count: 51,
+        entries: Array.from({ length: 51 }, (_, index) => ({ field: `field-${index}`, value: "active" })),
+      },
+    })).toThrow();
+    expect(AuditEventSchema.parse({
+      ...event,
+      before: { count: 1, entries: [{ field: "roles.teacher", value: "pending" }] },
+      after: { count: 1, entries: [{ field: "roles.teacher", value: "active" }] },
+    }).after?.entries[0]?.value).toBe("active");
+  });
+
+  it("caps ISO timestamps before datetime parsing", () => {
+    const oversizedTimestamp = `2026-08-28T00:00:00.${"0".repeat(80)}Z`;
+    expect(() => ClassroomSchema.parse({
+      id: "classroom-1",
+      ownerUid: "teacher-1",
+      name: "Physics A",
+      status: "active",
+      createdAt: oversizedTimestamp,
+      updatedAt: timestamp,
     })).toThrow();
   });
 
