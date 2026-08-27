@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { AdminBootstrapConfig, AuditEvent, VerifiedPrincipal } from "@vijeeta/api-contracts";
 
-import type { AuditEmitter } from "./audit";
+import type { AuditEmissionStatus, AuditEmissionStatusReporter, AuditEmitter } from "./audit";
 import type { MutationContext } from "./dashboard-store";
 import {
   FirestoreDashboardStore,
@@ -46,21 +46,26 @@ class FakeQuery implements FirestoreQuery {
     protected readonly database: FakeFirestore,
     private readonly collectionPath: string,
     private readonly filters: ReadonlyArray<{ field: string; value: unknown }> = [],
-    private readonly ordering?: { field: string; direction: "asc" | "desc" },
+    private readonly ordering: ReadonlyArray<{ field: string; direction: "asc" | "desc" }> = [],
     private readonly maximum?: number,
+    private readonly cursor?: readonly unknown[],
   ) {}
 
   where(field: string, operator: "==", value: unknown): FirestoreQuery {
     expect(operator).toBe("==");
-    return new FakeQuery(this.database, this.collectionPath, [...this.filters, { field, value }], this.ordering, this.maximum);
+    return new FakeQuery(this.database, this.collectionPath, [...this.filters, { field, value }], this.ordering, this.maximum, this.cursor);
   }
 
   orderBy(field: string, direction: "asc" | "desc" = "asc"): FirestoreQuery {
-    return new FakeQuery(this.database, this.collectionPath, this.filters, { field, direction }, this.maximum);
+    return new FakeQuery(this.database, this.collectionPath, this.filters, [...this.ordering, { field, direction }], this.maximum, this.cursor);
   }
 
   limit(maximum: number): FirestoreQuery {
-    return new FakeQuery(this.database, this.collectionPath, this.filters, this.ordering, maximum);
+    return new FakeQuery(this.database, this.collectionPath, this.filters, this.ordering, maximum, this.cursor);
+  }
+
+  startAfter(...values: unknown[]): FirestoreQuery {
+    return new FakeQuery(this.database, this.collectionPath, this.filters, this.ordering, this.maximum, values);
   }
 
   async get(): Promise<FirestoreQuerySnapshot> {
@@ -68,14 +73,33 @@ class FakeQuery implements FirestoreQuery {
     let documents = [...this.database.documents.entries()]
       .filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
       .filter(([, data]) => this.filters.every((filter) => data[filter.field] === filter.value));
-    if (this.ordering) {
-      const { field, direction } = this.ordering;
-      documents = documents.sort((left, right) => String(left[1][field]).localeCompare(String(right[1][field])) * (direction === "asc" ? 1 : -1));
-    }
+    documents = documents.sort((left, right) => this.compareDocuments(left, right));
+    if (this.cursor !== undefined) documents = documents.filter((document) => this.compareDocumentToCursor(document) > 0);
     if (this.maximum !== undefined) documents = documents.slice(0, this.maximum);
     return {
       docs: documents.map(([path]) => this.database.snapshot(path)),
     };
+  }
+
+  private compareDocuments(left: [string, StoredDocument], right: [string, StoredDocument]): number {
+    for (const order of this.ordering) {
+      const comparison = String(this.fieldValue(left, order.field)).localeCompare(String(this.fieldValue(right, order.field)));
+      if (comparison !== 0) return comparison * (order.direction === "asc" ? 1 : -1);
+    }
+    return 0;
+  }
+
+  private compareDocumentToCursor(document: [string, StoredDocument]): number {
+    if (this.cursor === undefined || this.cursor.length !== this.ordering.length) throw new Error("invalid fake query cursor");
+    for (const [index, order] of this.ordering.entries()) {
+      const comparison = String(this.fieldValue(document, order.field)).localeCompare(String(this.cursor[index]));
+      if (comparison !== 0) return comparison * (order.direction === "asc" ? 1 : -1);
+    }
+    return 0;
+  }
+
+  private fieldValue(document: [string, StoredDocument], field: string): unknown {
+    return field === "__name__" ? document[0].split("/").at(-1) : document[1][field];
   }
 }
 
@@ -147,6 +171,23 @@ class CapturingAuditEmitter implements AuditEmitter {
   }
 }
 
+class RejectingAuditEmitter implements AuditEmitter {
+  attempts = 0;
+
+  async emit(): Promise<void> {
+    this.attempts += 1;
+    throw new Error("writer rejected password=must-not-surface");
+  }
+}
+
+class CapturingAuditEmissionStatusReporter implements AuditEmissionStatusReporter {
+  readonly statuses: AuditEmissionStatus[] = [];
+
+  async report(status: AuditEmissionStatus): Promise<void> {
+    this.statuses.push(structuredClone(status));
+  }
+}
+
 const NOW = "2026-08-28T08:00:00.000Z";
 const AUTH_TIME = "2026-08-28T07:55:00.000Z";
 const CORRELATION_ID = "123e4567-e89b-12d3-a456-426614174000";
@@ -155,10 +196,16 @@ const BOOTSTRAP: AdminBootstrapConfig = {
   verifiedEmails: ["admin@example.com"],
   firebaseUids: [],
 };
+const BOOTSTRAP_BY_UID: AdminBootstrapConfig = {
+  version: 1,
+  verifiedEmails: [],
+  firebaseUids: ["admin-uid"],
+};
 
 const adminPrincipal = principal("admin-uid", "admin@example.com", true);
 const teacherPrincipal = principal("teacher-uid", "teacher@example.com", true);
 const otherTeacherPrincipal = principal("other-teacher-uid", "other.teacher@example.com", true);
+const studentPrincipal = principal("student-uid", "student@example.com", true);
 
 function principal(uid: string, email: string | null, emailVerified: boolean): VerifiedPrincipal {
   return { uid, email, emailVerified, displayName: `${uid} display`, authTime: AUTH_TIME };
@@ -175,6 +222,7 @@ function storeFor(database: FakeFirestore, emitter = new CapturingAuditEmitter()
       firestore: database,
       databaseId: "vijeeta-dashboard",
       auditEmitter: emitter,
+      auditEmissionStatusReporter: new CapturingAuditEmissionStatusReporter(),
       randomUuid: () => `generated-${++sequence}`,
       now: () => NOW,
       correlationId: () => CORRELATION_ID,
@@ -195,7 +243,12 @@ describe("FirestoreDashboardStore", () => {
     const emitter = new CapturingAuditEmitter();
 
     for (const databaseId of ["default", "(default)", "another-database"]) {
-      expect(() => new FirestoreDashboardStore({ firestore: database, databaseId, auditEmitter: emitter })).toThrow(/vijeeta-dashboard/);
+      expect(() => new FirestoreDashboardStore({
+        firestore: database,
+        databaseId,
+        auditEmitter: emitter,
+        auditEmissionStatusReporter: new CapturingAuditEmissionStatusReporter(),
+      })).toThrow(/vijeeta-dashboard/);
     }
     const { store } = storeFor(database);
     expect("delete" in store).toBe(false);
@@ -220,6 +273,159 @@ describe("FirestoreDashboardStore", () => {
     expect(database.created("auditEvents")).toHaveLength(1);
     expect(database.created("auditEvents")[0]?.data).toMatchObject({ action: "admin.bootstrap", actorUid: "admin-uid" });
     expect(emitter.events.map((auditEvent) => auditEvent.action)).toEqual(["admin.bootstrap"]);
+  });
+
+  it("rejects an idempotent bootstrap retry when the verified email changed", async () => {
+    const database = new FakeFirestore();
+    const { store, emitter } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP_BY_UID, context());
+
+    await expect(store.bootstrapAdmin(
+      principal("admin-uid", "changed.admin@example.com", true),
+      BOOTSTRAP_BY_UID,
+      context(),
+    )).rejects.toMatchObject({ code: "verified_email_changed" });
+
+    expect(database.created("auditEvents")).toHaveLength(1);
+    expect(emitter.events).toHaveLength(1);
+  });
+
+  it("rejects an idempotent bootstrap retry when its verified-email index is missing or malformed", async () => {
+    const database = new FakeFirestore();
+    const { store, emitter } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    const emailHash = createHash("sha256").update("admin@example.com").digest("hex");
+    database.documents.delete(`profileEmailIndex/${emailHash}`);
+
+    await expect(store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context())).rejects.toMatchObject({ code: "email_index_invalid" });
+
+    database.documents.set(`profileEmailIndex/${emailHash}`, {
+      firebaseUid: "admin-uid",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    await expect(store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context())).rejects.toMatchObject({ code: "email_index_invalid" });
+    expect(database.created("auditEvents")).toHaveLength(1);
+    expect(emitter.events).toHaveLength(1);
+  });
+
+  it("rejects an idempotent bootstrap retry when its verified-email index points to another UID", async () => {
+    const database = new FakeFirestore();
+    const { store, emitter } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    const emailHash = createHash("sha256").update("admin@example.com").digest("hex");
+    database.documents.set(`profileEmailIndex/${emailHash}`, {
+      normalizedEmail: "admin@example.com",
+      firebaseUid: "conflicting-admin-uid",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    await expect(store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context())).rejects.toMatchObject({ code: "email_index_collision" });
+    expect(database.created("auditEvents")).toHaveLength(1);
+    expect(emitter.events).toHaveLength(1);
+  });
+
+  it("returns a committed bootstrap when canonical emission is deferred and does not duplicate it on retry", async () => {
+    const database = new FakeFirestore();
+    const emitter = new RejectingAuditEmitter();
+    const reporter = new CapturingAuditEmissionStatusReporter();
+    let sequence = 0;
+    const store = new FirestoreDashboardStore({
+      firestore: database,
+      databaseId: "vijeeta-dashboard",
+      auditEmitter: emitter,
+      auditEmissionStatusReporter: reporter,
+      randomUuid: () => `generated-${++sequence}`,
+      now: () => NOW,
+      correlationId: () => CORRELATION_ID,
+    });
+
+    const created = await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP);
+    const retry = await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP);
+
+    expect(retry.internalProfileId).toBe(created.internalProfileId);
+    expect(database.documents.has("profiles/admin-uid")).toBe(true);
+    expect(database.created("auditEvents")).toHaveLength(1);
+    expect(emitter.attempts).toBe(1);
+    expect(reporter.statuses).toEqual([{
+      eventId: "generated-2",
+      action: "admin.bootstrap",
+      status: "deferred",
+      category: "canonical_emit_failed",
+    }]);
+    expect(JSON.stringify(reporter.statuses)).not.toContain("must-not-surface");
+  });
+
+  it("paginates profiles with a bounded opaque cursor and no overlap", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    for (const [uid, createdAt] of [
+      ["student-a", "2026-08-28T11:00:00.000Z"],
+      ["student-b", "2026-08-28T10:00:00.000Z"],
+      ["student-c", "2026-08-28T09:00:00.000Z"],
+    ] as const) {
+      database.documents.set(`profiles/${uid}`, {
+        internalProfileId: `profile-${uid}`,
+        firebaseUid: uid,
+        verifiedEmail: `${uid}@example.com`,
+        displayName: uid,
+        roles: { student: "active" },
+        activeRole: "student",
+        onboardingCompleted: true,
+        schemaVersion: 2,
+        createdAt,
+        updatedAt: createdAt,
+      });
+    }
+
+    const first = await store.listProfiles(adminPrincipal, { limit: 2 });
+    expect(first.items.map((profile) => profile.firebaseUid)).toEqual(["student-a", "student-b"]);
+    expect(first.nextCursor).not.toBeNull();
+    if (first.nextCursor === null) throw new Error("expected profile cursor");
+    const second = await store.listProfiles(adminPrincipal, { limit: 2, cursor: first.nextCursor });
+
+    expect(second.items.map((profile) => profile.firebaseUid)).toEqual(["student-c", "admin-uid"]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("paginates audit events and rejects a cursor issued for another repository", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    for (const [id, createdAt] of [
+      ["audit-a", "2026-08-28T11:00:00.000Z"],
+      ["audit-b", "2026-08-28T10:00:00.000Z"],
+      ["audit-c", "2026-08-28T09:00:00.000Z"],
+    ] as const) {
+      database.documents.set(`auditEvents/${id}`, {
+        id,
+        actorUid: "admin-uid",
+        actorProfileId: "generated-1",
+        action: "teacher.approved",
+        targetType: "profile",
+        targetId: "teacher-uid",
+        reason: "Reviewed eligibility",
+        correlationId: CORRELATION_ID,
+        canonicalLogInsertId: id,
+        createdAt,
+      });
+    }
+
+    const first = await store.listAuditEvents(adminPrincipal, { limit: 2 });
+    expect(first.items.map((event) => event.id)).toEqual(["audit-a", "audit-b"]);
+    expect(first.nextCursor).not.toBeNull();
+    if (first.nextCursor === null) throw new Error("expected audit cursor");
+    const second = await store.listAuditEvents(adminPrincipal, { limit: 2, cursor: first.nextCursor });
+
+    expect(second.items.map((event) => event.id)).toEqual(["audit-c", "generated-2"]);
+    expect(second.nextCursor).toBeNull();
+
+    await expect(store.listProfiles(adminPrincipal, {
+      limit: 1,
+      cursor: first.nextCursor,
+    })).rejects.toMatchObject({ code: "pagination_cursor_invalid" });
   });
 
   it("creates a pending Teacher profile and a hashed verified-email index in one transaction", async () => {
@@ -311,6 +517,51 @@ describe("FirestoreDashboardStore", () => {
 
     await expect(store.create(teacherPrincipal, { name: "Physics A" }, context())).rejects.toMatchObject({ code: "active_teacher_required" });
     expect(database.created("classrooms")).toHaveLength(0);
+  });
+
+  it("rejects a malformed reverse membership instead of exposing its classroom directly", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    database.documents.set("classrooms/class-a", {
+      id: "class-a",
+      ownerUid: "teacher-uid",
+      name: "Physics A",
+      status: "active",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    database.documents.set("studentMemberships/student-uid/classes/class-a", {
+      classroomId: "class-a",
+      studentUid: "student-uid",
+      status: "active",
+    });
+
+    await expect(store.getClassroom(studentPrincipal, "class-a")).rejects.toMatchObject({ code: "membership_projection_invalid" });
+  });
+
+  it("rejects a reverse membership whose embedded class ID differs from its document ID", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    database.documents.set("classrooms/class-b", {
+      id: "class-b",
+      ownerUid: "teacher-uid",
+      name: "Another Teacher Class",
+      status: "active",
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+    database.documents.set("studentMemberships/student-uid/classes/class-a", {
+      classroomId: "class-b",
+      studentUid: "student-uid",
+      sourceInviteId: "invite-a",
+      status: "active",
+      joinedAt: NOW,
+      updatedAt: NOW,
+    });
+
+    await expect(store.listForPrincipal(studentPrincipal)).rejects.toMatchObject({ code: "membership_projection_invalid" });
   });
 
   it("rolls back the authoritative write when the create-only audit mirror cannot be created", async () => {

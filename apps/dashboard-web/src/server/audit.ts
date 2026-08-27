@@ -1,11 +1,22 @@
 import { AuditEventSchema, type AuditEvent, type RedactedAuditChangeSet } from "@vijeeta/api-contracts";
 
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
-const BEARER = /Bearer\s+[^\s]+/gi;
-const SECRET_FIELD = /(answer|authorization|cookie|digest|email|key|secret|token)/i;
+const AUTH_CREDENTIAL = /\b(Bearer|Basic|Digest)\s+[^\s,;]+/gi;
+const SENSITIVE_ASSIGNMENT = /\b(authorization|proxy-authorization|cookie|set-cookie|api[-_ ]?key|x-api-key|password|passwd|credential|secret|access[-_]?token|refresh[-_]?token|id[-_]?token|token)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi;
+const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
+const COMMON_API_KEY = /\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9_-]{8,}\b/g;
+const SECRET_FIELD = /(answer|authorization|cookie|credential|digest|email|key|passw|secret|session|token)/i;
 
 export interface AuditEmitter {
   emit(event: AuditEvent): Promise<void>;
+}
+
+export type AuditEmissionStatus =
+  | { eventId: string; action: AuditEvent["action"]; status: "emitted" }
+  | { eventId: string; action: AuditEvent["action"]; status: "deferred"; category: "canonical_emit_failed" };
+
+export interface AuditEmissionStatusReporter {
+  report(status: AuditEmissionStatus): Promise<void>;
 }
 
 export interface SafeAuditChange {
@@ -77,10 +88,16 @@ export class StructuredAuditEmitter implements AuditEmitter {
 function safeChanges(changeSet: RedactedAuditChangeSet): SafeAuditChange[] {
   return changeSet.entries.map(({ field, value }) => ({
     field,
-    value: value === null ? null : SECRET_FIELD.test(field) ? "[REDACTED]" : sanitizeText(value),
+    value: value === null ? null : SECRET_FIELD.test(field) ? "[REDACTED]" : sanitizeText(value, 240),
   }));
 }
 
-function sanitizeText(value: string | null): string | null {
-  return value?.replace(BEARER, "Bearer [REDACTED]").replace(EMAIL, "[REDACTED_EMAIL]").slice(0, 500) ?? null;
+function sanitizeText(value: string | null, maximum = 500): string | null {
+  return value
+    ?.replace(AUTH_CREDENTIAL, "$1 [REDACTED]")
+    .replace(SENSITIVE_ASSIGNMENT, "$1=[REDACTED]")
+    .replace(JWT, "[REDACTED_JWT]")
+    .replace(COMMON_API_KEY, "[REDACTED_API_KEY]")
+    .replace(EMAIL, "[REDACTED_EMAIL]")
+    .slice(0, maximum) ?? null;
 }

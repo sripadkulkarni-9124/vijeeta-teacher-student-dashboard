@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   AdminBootstrapConfigSchema,
   AuditEventSchema,
+  ClassroomMembershipSchema,
   ClassroomSchema,
   CreateClassroomRequestSchema,
   DashboardProfileOnboardRequestSchema,
@@ -13,6 +14,7 @@ import {
   type AuditAction,
   type AuditEvent,
   type Classroom,
+  type ClassroomMembership,
   type CreateClassroomRequest,
   type DashboardProfileOnboardRequest,
   type DashboardProfileV2,
@@ -22,7 +24,7 @@ import {
 } from "@vijeeta/api-contracts";
 
 import { matchesAdminBootstrap } from "./admin-bootstrap";
-import type { AuditEmitter } from "./audit";
+import type { AuditEmissionStatusReporter, AuditEmitter } from "./audit";
 import {
   DashboardStoreError,
   type AdminRepository,
@@ -50,6 +52,7 @@ export interface FirestoreQuery {
   where(field: string, operator: "==", value: unknown): FirestoreQuery;
   orderBy(field: string, direction?: "asc" | "desc"): FirestoreQuery;
   limit(maximum: number): FirestoreQuery;
+  startAfter(...values: unknown[]): FirestoreQuery;
   get(): Promise<FirestoreQuerySnapshot>;
 }
 
@@ -80,6 +83,7 @@ export interface FirestoreDashboardStoreOptions {
   firestore: FirestoreDashboardLike;
   databaseId: string;
   auditEmitter: AuditEmitter;
+  auditEmissionStatusReporter: AuditEmissionStatusReporter;
   randomUuid?: () => string;
   now?: () => string;
   correlationId?: () => string;
@@ -93,6 +97,7 @@ interface MutationResult<T> {
 export class FirestoreDashboardStore implements ProfileRepository, AdminRepository, ClassroomRepository, AuditRepository {
   private readonly firestore: FirestoreDashboardLike;
   private readonly auditEmitter: AuditEmitter;
+  private readonly auditEmissionStatusReporter: AuditEmissionStatusReporter;
   private readonly randomUuid: () => string;
   private readonly now: () => string;
   private readonly correlationId: () => string;
@@ -103,6 +108,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     }
     this.firestore = options.firestore;
     this.auditEmitter = options.auditEmitter;
+    this.auditEmissionStatusReporter = options.auditEmissionStatusReporter;
     this.randomUuid = options.randomUuid ?? randomUUID;
     this.now = options.now ?? (() => new Date().toISOString());
     this.correlationId = options.correlationId ?? randomUUID;
@@ -174,7 +180,10 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<DashboardProfileV2>> => {
       const snapshot = await transaction.get(profileReference);
       const existing = snapshot.exists ? profileFromSnapshot(snapshot, principal.uid) : null;
-      if (existing?.roles.admin !== undefined) return { value: existing, event: null };
+      if (existing?.roles.admin !== undefined) {
+        await this.validateExistingAdminIdentity(transaction, principal, existing);
+        return { value: existing, event: null };
+      }
       if (existing !== null && existing.verifiedEmail !== null && existing.verifiedEmail !== principal.email) {
         throw new DashboardStoreError("Verified email changed for an existing profile", "verified_email_changed");
       }
@@ -219,11 +228,18 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     const principal = VerifiedPrincipalSchema.parse(principalCandidate);
     await this.requireActiveAdmin(principal.uid);
     const page = PaginationRequestSchema.parse(pageCandidate);
-    const query = this.firestore.collection("profiles").orderBy("createdAt", "desc").limit(page.limit);
+    const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "profiles");
+    let query = this.firestore.collection("profiles").orderBy("createdAt", "desc").orderBy("__name__", "desc");
+    if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
+    query = query.limit(page.limit + 1);
     const snapshot = await query.get();
+    const items = snapshot.docs.slice(0, page.limit).map((document) => profileFromSnapshot(document, document.id));
+    const last = items.at(-1);
     return {
-      items: snapshot.docs.map((document) => profileFromSnapshot(document, document.id)),
-      nextCursor: null,
+      items,
+      nextCursor: snapshot.docs.length > page.limit && last !== undefined
+        ? encodeCursor("profiles", last.createdAt, last.firebaseUid)
+        : null,
     };
   }
 
@@ -288,7 +304,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     }
     if (profile.roles.student === "active") {
       const membership = await this.studentMembershipReference(principal.uid, classroomId).get();
-      if (membership.exists && membership.data()?.status === "active") return classroom;
+      if (membership.exists && membershipFromProjection(membership, principal.uid, classroomId).status === "active") return classroom;
     }
     throw new DashboardStoreError("Classroom is outside the verified principal scope", "classroom_forbidden");
   }
@@ -314,9 +330,8 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
         .limit(MAX_PAGE_SIZE)
         .get();
       const classrooms = await Promise.all(membershipSnapshot.docs.map(async (membership) => {
-        const classroomId = membership.data()?.classroomId;
-        if (typeof classroomId !== "string") throw new Error("Student membership projection is invalid");
-        const classroom = await this.classroomReference(classroomId).get();
+        const projection = membershipFromProjection(membership, principal.uid, membership.id);
+        const classroom = await this.classroomReference(projection.classroomId).get();
         return classroom.exists ? classroomFromSnapshot(classroom) : null;
       }));
       return classrooms.filter((classroom): classroom is Classroom => classroom !== null);
@@ -344,10 +359,17 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     const principal = VerifiedPrincipalSchema.parse(principalCandidate);
     await this.requireActiveAdmin(principal.uid);
     const page = PaginationRequestSchema.parse(pageCandidate);
-    const snapshot = await this.firestore.collection("auditEvents").orderBy("createdAt", "desc").limit(page.limit).get();
+    const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "auditEvents");
+    let query = this.firestore.collection("auditEvents").orderBy("createdAt", "desc").orderBy("__name__", "desc");
+    if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
+    const snapshot = await query.limit(page.limit + 1).get();
+    const items = snapshot.docs.slice(0, page.limit).map((document) => auditFromSnapshot(document));
+    const last = items.at(-1);
     return {
-      items: snapshot.docs.map((document) => auditFromSnapshot(document)),
-      nextCursor: null,
+      items,
+      nextCursor: snapshot.docs.length > page.limit && last !== undefined
+        ? encodeCursor("auditEvents", last.createdAt, last.id)
+        : null,
     };
   }
 
@@ -455,6 +477,24 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     else transaction.create(reference, index);
   }
 
+  private async validateExistingAdminIdentity(
+    transaction: FirestoreDashboardTransaction,
+    principal: VerifiedPrincipal & { email: string; emailVerified: true },
+    profile: DashboardProfileV2,
+  ): Promise<void> {
+    if (profile.verifiedEmail !== principal.email) {
+      throw new DashboardStoreError("Verified email changed for an existing profile", "verified_email_changed");
+    }
+    const snapshot = await transaction.get(this.emailIndexReference(principal.email));
+    const data = snapshot.data();
+    if (!snapshot.exists || !isValidEmailIndex(data, principal.email)) {
+      throw new DashboardStoreError("Verified email index is missing or invalid", "email_index_invalid");
+    }
+    if (data.firebaseUid !== principal.uid) {
+      throw new DashboardStoreError("Verified email is indexed to another identity", "email_index_collision");
+    }
+  }
+
   private createAuditMirror(
     transaction: FirestoreDashboardTransaction,
     actor: DashboardProfileV2,
@@ -487,7 +527,27 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
   }
 
   private async emit(event: AuditEvent | null): Promise<void> {
-    if (event !== null) await this.auditEmitter.emit(event);
+    if (event === null) return;
+    try {
+      await this.auditEmitter.emit(event);
+    } catch {
+      await this.reportAuditEmission({
+        eventId: event.id,
+        action: event.action,
+        status: "deferred",
+        category: "canonical_emit_failed",
+      });
+      return;
+    }
+    await this.reportAuditEmission({ eventId: event.id, action: event.action, status: "emitted" });
+  }
+
+  private async reportAuditEmission(status: Parameters<AuditEmissionStatusReporter["report"]>[0]): Promise<void> {
+    try {
+      await this.auditEmissionStatusReporter.report(status);
+    } catch {
+      // The committed Firestore mirror remains the durable replay source.
+    }
   }
 
   private async getRequiredProfile(
@@ -568,6 +628,22 @@ function classroomsFromQuery(snapshot: FirestoreQuerySnapshot): Classroom[] {
   return snapshot.docs.map((document) => classroomFromSnapshot(document));
 }
 
+function membershipFromProjection(
+  snapshot: FirestoreDashboardDocumentSnapshot,
+  expectedStudentUid: string,
+  expectedClassroomId: string,
+): ClassroomMembership {
+  const data = snapshot.data();
+  const parsed = ClassroomMembershipSchema.safeParse(data);
+  if (!parsed.success
+    || snapshot.id !== expectedClassroomId
+    || parsed.data.classroomId !== expectedClassroomId
+    || parsed.data.studentUid !== expectedStudentUid) {
+    throw new DashboardStoreError("Student membership projection is invalid", "membership_projection_invalid");
+  }
+  return parsed.data;
+}
+
 function auditFromSnapshot(snapshot: FirestoreDashboardDocumentSnapshot): AuditEvent {
   const data = snapshot.data();
   if (data === undefined) throw new Error("Persisted audit data is unavailable");
@@ -605,10 +681,77 @@ function changes(field: string, value: string | null): RedactedAuditChangeSet {
 }
 
 function assertSafeDocumentId(value: string, label: string): void {
-  if (value.trim().length === 0 || value.length > 128 || value.includes("/") || [...value].some((character) => {
+  if (!isSafeDocumentId(value)) throw new Error(`${label} must be a safe Firestore document ID`);
+}
+
+function isValidEmailIndex(data: Record<string, unknown> | undefined, normalizedEmail: string): data is {
+  normalizedEmail: string;
+  firebaseUid: string;
+  createdAt: string;
+  updatedAt: string;
+} {
+  if (data === undefined) return false;
+  const keys = Object.keys(data).sort();
+  return keys.length === 4
+    && keys[0] === "createdAt"
+    && keys[1] === "firebaseUid"
+    && keys[2] === "normalizedEmail"
+    && keys[3] === "updatedAt"
+    && data.normalizedEmail === normalizedEmail
+    && typeof data.firebaseUid === "string"
+    && isIsoTimestamp(data.createdAt)
+    && isIsoTimestamp(data.updatedAt);
+}
+
+function isIsoTimestamp(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length <= 64
+    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)
+    && Number.isFinite(Date.parse(value));
+}
+
+type CursorScope = "profiles" | "auditEvents";
+
+interface PageCursor {
+  version: 1;
+  scope: CursorScope;
+  createdAt: string;
+  id: string;
+}
+
+function encodeCursor(scope: CursorScope, createdAt: string, id: string): string {
+  return Buffer.from(JSON.stringify({ version: 1, scope, createdAt, id } satisfies PageCursor)).toString("base64url");
+}
+
+function decodeCursor(serialized: string, expectedScope: CursorScope): PageCursor {
+  try {
+    const decoded = Buffer.from(serialized, "base64url");
+    if (decoded.toString("base64url") !== serialized) throw new Error("Non-canonical cursor encoding");
+    const candidate: unknown = JSON.parse(decoded.toString("utf8"));
+    if (typeof candidate !== "object" || candidate === null) throw new Error("Cursor is not an object");
+    const cursor = candidate as Record<string, unknown>;
+    const keys = Object.keys(cursor).sort();
+    if (keys.length !== 4
+      || keys[0] !== "createdAt"
+      || keys[1] !== "id"
+      || keys[2] !== "scope"
+      || keys[3] !== "version"
+      || cursor.version !== 1
+      || cursor.scope !== expectedScope
+      || !isIsoTimestamp(cursor.createdAt)
+      || typeof cursor.id !== "string"
+      || !isSafeDocumentId(cursor.id)) {
+      throw new Error("Cursor fields are invalid");
+    }
+    return cursor as unknown as PageCursor;
+  } catch {
+    throw new DashboardStoreError("Pagination cursor is invalid", "pagination_cursor_invalid");
+  }
+}
+
+function isSafeDocumentId(value: string): boolean {
+  return value.trim().length > 0 && value.length <= 128 && !value.includes("/") && ![...value].some((character) => {
     const point = character.codePointAt(0) ?? 0;
     return point <= 31 || point === 127;
-  })) {
-    throw new Error(`${label} must be a safe Firestore document ID`);
-  }
+  });
 }

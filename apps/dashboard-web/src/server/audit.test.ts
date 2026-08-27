@@ -110,4 +110,43 @@ describe("StructuredAuditEmitter", () => {
       insertId: "audit-1",
     });
   });
+
+  it("redacts credentials, cookies, API keys, and JWT-like values while preserving safe context", async () => {
+    const records: unknown[] = [];
+    const emitter = new StructuredAuditEmitter({ write: async (record) => { records.push(record); } });
+    const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1c2VyLTEifQ.signature12345";
+    const sensitiveValues = [
+      "hunter2",
+      "sk_live_1234567890",
+      "session=abc123",
+      "dXNlcjpwYXNz",
+      "access-value",
+      "refresh-value",
+      jwt,
+      "stored-password-hash",
+    ];
+
+    await emitter.emit({
+      ...event,
+      reason: `Review context password=hunter2 api_key=sk_live_1234567890 Cookie:session=abc123 Authorization=Basic dXNlcjpwYXNz ${jwt}`,
+      before: {
+        count: 1,
+        entries: [{ field: "metadata", value: "access_token=access-value refresh_token:refresh-value" }],
+      },
+      after: {
+        count: 1,
+        entries: [{ field: "passwordHash", value: "stored-password-hash" }],
+      },
+    });
+
+    const serialized = JSON.stringify(records[0]);
+    for (const sensitive of sensitiveValues) expect(serialized).not.toContain(sensitive);
+    expect(records[0]).toMatchObject({
+      audit: {
+        reason: expect.stringContaining("Review context"),
+        before: [{ field: "metadata", value: "access_token=[REDACTED] refresh_token=[REDACTED]" }],
+        after: [{ field: "passwordHash", value: "[REDACTED]" }],
+      },
+    });
+  });
 });
