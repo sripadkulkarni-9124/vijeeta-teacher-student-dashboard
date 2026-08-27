@@ -2,6 +2,8 @@ import { applicationDefault, getApps, initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { FieldValue, getFirestore } from "firebase-admin/firestore";
 
+import { JsonLineAuditWriter, StructuredAuditEmitter, type AuditEmissionStatusReporter } from "./audit";
+import { FirestoreDashboardStore, type FirestoreDashboardLike } from "./firestore-dashboard-store";
 import { FirestoreProfileStore, type FirestoreLike } from "./firestore-profile-store";
 import {
   TokenVerificationError,
@@ -70,6 +72,7 @@ export class FirebaseIdTokenVerifier implements TokenVerifier {
 export interface FirebaseServerRuntime {
   verifier: FirebaseIdTokenVerifier;
   profiles: ProfileStore;
+  dashboard: FirestoreDashboardStore;
 }
 
 let runtimePromise: Promise<FirebaseServerRuntime> | undefined;
@@ -94,6 +97,12 @@ export async function getProductionFirebaseRuntime(config: V3RuntimeConfig = loa
         profiles: new FirestoreProfileStore({
           firestore: firestore as unknown as FirestoreLike,
           serverTimestamp: () => FieldValue.serverTimestamp(),
+        }),
+        dashboard: new FirestoreDashboardStore({
+          firestore: firestore as unknown as FirestoreDashboardLike,
+          databaseId,
+          auditEmitter: new StructuredAuditEmitter(new JsonLineAuditWriter()),
+          auditEmissionStatusReporter: productionAuditStatusReporter,
         }),
       };
     } catch {
@@ -126,3 +135,16 @@ function isFirebaseDependencyFailure(error: unknown): boolean {
     || code === "auth/invalid-credential"
   );
 }
+
+const productionAuditStatusReporter: AuditEmissionStatusReporter = {
+  report: async (status) => {
+    if (status.status !== "deferred") return;
+    process.stderr.write(`${JSON.stringify({
+      severity: "ERROR",
+      message: "vijeeta_dashboard_audit_emission_deferred",
+      eventId: status.eventId,
+      action: status.action,
+      category: status.category,
+    })}\n`);
+  },
+};

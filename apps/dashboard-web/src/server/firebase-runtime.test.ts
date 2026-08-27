@@ -26,6 +26,7 @@ import {
   getProductionFirebaseRuntime,
   resetFirebaseRuntimeForTests,
 } from "./firebase-runtime";
+import { FirestoreDashboardStore } from "./firestore-dashboard-store";
 
 beforeEach(() => {
   resetFirebaseRuntimeForTests();
@@ -129,7 +130,7 @@ describe("Firestore database guard", () => {
   });
 
   it("initializes Firebase Admin with ADC and the exact approved project/database", async () => {
-    await getProductionFirebaseRuntime({
+    const runtime = await getProductionFirebaseRuntime({
       baseUrl: new URL("https://v3.example.test"),
       timeoutMs: 5000,
       mode: "production",
@@ -148,6 +149,7 @@ describe("Firestore database guard", () => {
       expect.objectContaining({ name: "vijeeta-dashboard-server" }),
       "vijeeta-dashboard",
     );
+    expect(runtime.dashboard).toBeInstanceOf(FirestoreDashboardStore);
   });
 
   it("rejects an existing Firebase Admin application bound to another project", async () => {
