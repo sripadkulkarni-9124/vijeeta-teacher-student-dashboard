@@ -78,7 +78,7 @@ describe("ProductionDashboard", () => {
     expect(window.sessionStorage.length).toBe(0);
   });
 
-  it("loads the server profile before rendering a protected route and replace-redirects a forged URL", async () => {
+  it("renders only a neutral redirect state for a Student opening a forged Teacher route", async () => {
     window.history.replaceState({}, "", "/teacher");
     const connected: ConnectedNavigationApi = {
       auth: api().auth,
@@ -90,8 +90,26 @@ describe("ProductionDashboard", () => {
 
     expect(screen.getByRole("status")).toHaveTextContent(/checking your dashboard access/i);
     expect(screen.queryByText(/teacher workspace/i)).not.toBeInTheDocument();
-    expect(await screen.findByRole("heading", { name: /student workspace/i })).toBeVisible();
-    expect(window.location.pathname).toBe("/student");
+    expect(await screen.findByText(/redirecting to your authorized workspace/i)).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /student workspace/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /teacher workspace/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe("/student"));
+  });
+
+  it.each([
+    ["admin" as const, serverProfile({ roles: { teacher: "active" }, activeRole: "teacher" }), "/teacher"],
+    ["teacher" as const, serverProfile({ roles: { teacher: "pending" }, activeRole: null }), "/pending-teacher"],
+    ["teacher" as const, serverProfile({ roles: { teacher: "suspended" }, activeRole: null }), "/suspended"],
+  ])("never renders protected content while redirecting a wrong %s route", async (requestedRoute, persisted, canonicalPath) => {
+    window.history.replaceState({}, "", `/${requestedRoute}`);
+    const connected: ConnectedNavigationApi = {
+      auth: api().auth, getProfile: vi.fn(async () => persisted), onboard: vi.fn(), setActiveRole: vi.fn(),
+    };
+    render(<ConnectedDashboardNavigation api={connected} requestedRoute={requestedRoute} />);
+
+    expect(await screen.findByText(/redirecting to your authorized workspace/i)).toBeVisible();
+    expect(screen.queryByText(/student workspace|teacher workspace|admin workspace/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe(canonicalPath));
   });
 
   it("offers only Student and Teacher during first-use onboarding and keeps Teacher pending", async () => {
@@ -131,6 +149,28 @@ describe("ProductionDashboard", () => {
     expect(window.location.pathname).toBe("/student");
   });
 
+  it.each([
+    ["student" as const, "teacher" as const],
+    ["teacher" as const, "student" as const],
+  ])("recovers an active %s role without exposing the suspended %s role", async (activeRole, suspendedRole) => {
+    const waiting = serverProfile({ roles: { [activeRole]: "active", [suspendedRole]: "suspended" }, activeRole: null });
+    const activated = serverProfile({ roles: waiting.roles, activeRole });
+    const connected: ConnectedNavigationApi = {
+      auth: api().auth, getProfile: vi.fn(async () => waiting), onboard: vi.fn(), setActiveRole: vi.fn(async () => activated),
+    };
+    render(<ConnectedDashboardNavigation api={connected} requestedRoute="suspended" />);
+
+    expect(await screen.findByRole("heading", { name: /workspace suspended/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: new RegExp(`${activeRole} workspace`, "i") })).toBeVisible();
+    expect(screen.queryByRole("button", { name: new RegExp(`${suspendedRole} workspace`, "i") })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: new RegExp(`${activeRole} workspace`, "i") }));
+    expect(screen.getByRole("status")).toHaveTextContent(/checking your dashboard access/i);
+    expect(screen.queryByText(/student workspace|teacher workspace|admin workspace/i)).not.toBeInTheDocument();
+    await waitFor(() => expect(connected.setActiveRole).toHaveBeenCalledWith(activeRole));
+    await waitFor(() => expect(window.location.pathname).toBe(`/${activeRole}`));
+    expect(await screen.findByRole("heading", { name: new RegExp(`${activeRole} workspace`, "i") })).toBeVisible();
+  });
+
   it("clears protected content immediately when Firebase reports a different signed-in profile", async () => {
     let listener: ((user: typeof profile.user | null) => void) | undefined;
     let resolveSecond!: (value: DashboardProfileV2) => void;
@@ -148,7 +188,9 @@ describe("ProductionDashboard", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/checking your dashboard access/i));
     expect(screen.queryByRole("heading", { name: /teacher workspace/i })).not.toBeInTheDocument();
     resolveSecond(serverProfile({ firebaseUid: "uid-2", verifiedEmail: "student@example.test" }));
-    expect(await screen.findByRole("heading", { name: /student workspace/i })).toBeVisible();
+    expect(await screen.findByText(/redirecting to your authorized workspace/i)).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /student workspace/i })).not.toBeInTheDocument();
+    await waitFor(() => expect(window.location.pathname).toBe("/student"));
   });
 
   it("offers first-login role onboarding and never persists the choice in browser storage", async () => {

@@ -62,6 +62,10 @@ export function resolveProtectedRoute(
     : { render: false, redirect: resolved.canonicalPath };
 }
 
+function requestedRouteForState(state: DashboardRouteState): DashboardRequestedRoute {
+  return state === "signed_out" || state === "error" ? "root" : state;
+}
+
 export function consumeInviteTokenFragment(): string | null {
   if (typeof window === "undefined") return null;
   const parameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
@@ -258,9 +262,12 @@ export function ConnectedDashboardNavigation({
   const [status, setStatus] = useState<"signed_out" | "loading" | "ready" | "error">(api.auth.currentUser ? "loading" : "signed_out");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [currentRoute, setCurrentRoute] = useState<DashboardRequestedRoute>(requestedRoute);
   const [invitationLinkState, setInvitationLinkState] = useState<"unchecked" | "captured" | "missing">("unchecked");
   const authorizationVersion = useRef(0);
   const invitationToken = useRef<string | null | undefined>(undefined);
+
+  useEffect(() => setCurrentRoute(requestedRoute), [requestedRoute]);
 
   useEffect(() => {
     if (requestedRoute !== "invite" || invitationToken.current !== undefined) return;
@@ -318,9 +325,9 @@ export function ConnectedDashboardNavigation({
 
   useEffect(() => {
     if (status !== "ready") return;
-    const guard = resolveProtectedRoute(requestedRoute, user !== null, profile);
+    const guard = resolveProtectedRoute(currentRoute, user !== null, profile);
     if (guard.redirect !== null) replacePath(guard.redirect);
-  }, [profile, requestedRoute, status, user]);
+  }, [currentRoute, profile, status, user]);
 
   const signIn = async () => {
     setBusy(true);
@@ -344,7 +351,9 @@ export function ConnectedDashboardNavigation({
       const next = await api.onboard(role);
       setProfile(next);
       setStatus("ready");
-      replacePath(resolveDashboardRoute({ authenticated: true, profile: next }).canonicalPath);
+      const destination = resolveDashboardRoute({ authenticated: true, profile: next });
+      setCurrentRoute(requestedRouteForState(destination.state));
+      replacePath(destination.canonicalPath);
     } catch (caught) { setError(connectedMessage(caught)); setStatus("error"); }
   };
   const switchRole = async (role: ConnectedDashboardRole) => {
@@ -355,7 +364,9 @@ export function ConnectedDashboardNavigation({
       const next = await api.setActiveRole(role);
       setProfile(next);
       setStatus("ready");
-      replacePath(resolveDashboardRoute({ authenticated: true, profile: next }).canonicalPath);
+      const destination = resolveDashboardRoute({ authenticated: true, profile: next });
+      setCurrentRoute(requestedRouteForState(destination.state));
+      replacePath(destination.canonicalPath);
     } catch (caught) { setError(connectedMessage(caught)); setStatus("error"); }
   };
 
@@ -369,7 +380,9 @@ export function ConnectedDashboardNavigation({
   );
 
   const resolved = resolveDashboardRoute({ authenticated: true, profile });
-  if (requestedRoute === "invite") return (
+  const guard = resolveProtectedRoute(currentRoute, true, profile);
+  if (!guard.render) return <p role="status">Redirecting to your authorized workspace…</p>;
+  if (currentRoute === "invite") return (
     <main><h1>Classroom invitation</h1><p>{invitationLinkState === "missing" ? "Open the invitation link from your email to continue." : "Your invitation is held only in this tab while we verify it."}</p></main>
   );
   if (resolved.state === "onboarding") return (
@@ -378,20 +391,27 @@ export function ConnectedDashboardNavigation({
       <button type="button" onClick={() => void onboard("teacher")}>Request Teacher access</button>
     </main>
   );
-  if (resolved.state === "pending_teacher") return <main><h1>Teacher approval pending</h1><p>An Admin must approve Teacher access before you can continue.</p></main>;
-  if (resolved.state === "suspended") return <main><h1>Workspace suspended</h1><p>This workspace is unavailable. Contact an administrator.</p></main>;
-  if (resolved.state === "error" || profile === null) return <p role="alert">The server profile has no active workspace.</p>;
+  if (resolved.state === "error" || resolved.state === "signed_out" || profile === null) return <p role="alert">The server profile has no active workspace.</p>;
 
   const activeRoles = (["student", "teacher", "admin"] as const).filter((role) => profile.roles[role] === "active");
+  const workspaceNavigation = (exclude?: ConnectedDashboardRole) => (
+    <nav aria-label="Available workspaces">
+      {activeRoles.filter((role) => role !== exclude).map((role) => (
+        <button key={role} type="button" onClick={() => void switchRole(role)}>{role[0]!.toUpperCase() + role.slice(1)} workspace</button>
+      ))}
+    </nav>
+  );
+  if (resolved.state === "pending_teacher") return (
+    <main><h1>Teacher approval pending</h1><p>An Admin must approve Teacher access before you can continue.</p>{workspaceNavigation()}</main>
+  );
+  if (resolved.state === "suspended") return (
+    <main><h1>Workspace suspended</h1><p>This workspace is unavailable. Choose another active workspace or contact an administrator.</p>{workspaceNavigation()}</main>
+  );
   return (
     <main>
       <header><p>Signed in as {profile.verifiedEmail ?? profile.displayName}</p><button type="button" onClick={() => void signOut()}>Log out</button></header>
       <h1>{resolved.state[0]!.toUpperCase() + resolved.state.slice(1)} workspace</h1>
-      <nav aria-label="Available workspaces">
-        {activeRoles.filter((role) => role !== resolved.state).map((role) => (
-          <button key={role} type="button" onClick={() => void switchRole(role)}>{role[0]!.toUpperCase() + role.slice(1)} workspace</button>
-        ))}
-      </nav>
+      {workspaceNavigation(resolved.state)}
       <p>Your access was verified from your server profile.</p>
     </main>
   );

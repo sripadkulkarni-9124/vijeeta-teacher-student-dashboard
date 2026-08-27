@@ -14,6 +14,23 @@ function response(body: unknown, status = 200, url = "https://dashboard.example/
   return result;
 }
 
+function streamedResponse(chunks: Uint8Array[], options: { contentLength?: number; close?: boolean } = {}) {
+  const result = new Response(new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) controller.enqueue(chunk);
+      if (options.close !== false) controller.close();
+    },
+  }), {
+    headers: {
+      "content-type": "application/json",
+      "cache-control": "private, no-store",
+      ...(options.contentLength === undefined ? {} : { "content-length": String(options.contentLength) }),
+    },
+  });
+  Object.defineProperty(result, "url", { value: "https://dashboard.example/api/profile" });
+  return result;
+}
+
 const profile = {
   internalProfileId: "profile-1",
   firebaseUid: "uid-1",
@@ -173,5 +190,32 @@ describe("connected same-origin API", () => {
       await expect(api.getProfile()).rejects.toBeInstanceOf(ConnectedApiError);
       try { await api.getProfile(); } catch (error) { expect(String(error)).not.toContain("private-token-value"); }
     }
+  });
+
+  it("keeps the timeout active while a response body is stalled", async () => {
+    const stalled = streamedResponse([], { close: false });
+    const api = createConnectedApi({ getIdToken: async () => "secret", transport: async () => stalled, origin: "https://dashboard.example", timeoutMs: 10 });
+
+    await expect(api.getProfile()).rejects.toMatchObject({ code: "timeout", retryable: true });
+  });
+
+  it("counts streamed bytes before decoding and never calls response.text for oversized chunks", async () => {
+    const oversizedMultibyte = new TextEncoder().encode(`{"profile":"${"é".repeat(524_289)}"}`);
+    const chunkOverflow = streamedResponse([oversizedMultibyte.subarray(0, 700_000), oversizedMultibyte.subarray(700_000)]);
+    const textSpy = vi.spyOn(chunkOverflow, "text");
+    const api = createConnectedApi({ getIdToken: async () => "secret", transport: async () => chunkOverflow, origin: "https://dashboard.example" });
+
+    await expect(api.getProfile()).rejects.toMatchObject({ code: "invalid_response" });
+    expect(textSpy).not.toHaveBeenCalled();
+  });
+
+  it("rejects malformed streamed JSON without surfacing the body or token", async () => {
+    const malformed = streamedResponse([new TextEncoder().encode("{not-json:secret-token}")]);
+    const api = createConnectedApi({ getIdToken: async () => "secret-token", transport: async () => malformed, origin: "https://dashboard.example" });
+
+    const error = await api.getProfile().catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: "invalid_response" });
+    expect(String(error)).not.toContain("secret-token");
+    expect(String(error)).not.toContain("not-json");
   });
 });

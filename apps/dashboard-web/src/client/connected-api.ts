@@ -90,10 +90,51 @@ function invalidResponse(message: string): ConnectedApiError {
   return new ConnectedApiError(message, "invalid_response", undefined, undefined, false);
 }
 
-async function readJson(response: Response): Promise<unknown> {
-  const text = await response.text();
-  if (text.length > MAX_RESPONSE_BYTES) throw invalidResponse("API response is too large");
-  try { return JSON.parse(text) as unknown; } catch { throw invalidResponse("API response was not valid JSON"); }
+async function readJson(response: Response, signal: AbortSignal): Promise<unknown> {
+  if (response.body === null) throw invalidResponse("API response body is unavailable");
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  for (;;) {
+    const chunk = await readWithAbort(reader, signal);
+    if (chunk.done) break;
+    byteLength += chunk.value.byteLength;
+    if (byteLength > MAX_RESPONSE_BYTES) {
+      await reader.cancel().catch(() => undefined);
+      throw invalidResponse("API response is too large");
+    }
+    chunks.push(chunk.value);
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); }
+  catch { throw invalidResponse("API response was not valid UTF-8"); }
+  try { return JSON.parse(text) as unknown; }
+  catch { throw invalidResponse("API response was not valid JSON"); }
+}
+
+function readWithAbort(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  signal: AbortSignal,
+): Promise<ReadableStreamReadResult<Uint8Array>> {
+  if (signal.aborted) return Promise.reject(abortError());
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      void reader.cancel().catch(() => undefined);
+      reject(abortError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    void reader.read().then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
+}
+
+function abortError(): Error {
+  return Object.assign(new Error("Request aborted"), { name: "AbortError" });
 }
 
 function parseProblem(value: unknown, status: number): ConnectedApiError {
@@ -120,11 +161,10 @@ export function createConnectedApi(options: ConnectedApiOptions) {
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), timeoutMs);
-      let response: Response;
       try {
         const headers: Record<string, string> = { accept: "application/json", authorization: `Bearer ${token}` };
         if (request.body !== undefined) headers["content-type"] = "application/json";
-        response = await transport(path, {
+        const response = await transport(path, {
           method,
           headers,
           ...(request.body === undefined ? {} : { body: JSON.stringify(request.body) }),
@@ -134,20 +174,22 @@ export function createConnectedApi(options: ConnectedApiOptions) {
           referrerPolicy: "no-referrer",
           signal: controller.signal,
         });
-      } catch {
-        if (controller.signal.aborted) throw new ConnectedApiError("The request timed out", "timeout", undefined, undefined, true);
+        validateResponseBoundary(response, origin);
+        const payload = await readJson(response, controller.signal);
+        if (response.status === 401 || response.status === 403) options.onAuthorizationLost?.();
+        if (response.status === 401 && safeRead && !forced) { forced = true; continue; }
+        if (!response.ok) throw parseProblem(payload, response.status);
+        try { return schema.parse(payload); }
+        catch { throw invalidResponse("API response did not match its contract"); }
+      } catch (error) {
+        if (controller.signal.aborted || (error instanceof Error && error.name === "AbortError")) {
+          throw new ConnectedApiError("The request timed out", "timeout", undefined, undefined, true);
+        }
+        if (error instanceof ConnectedApiError) throw error;
         throw new ConnectedApiError("The dashboard service is unavailable", "network_error", undefined, undefined, true);
       } finally {
         clearTimeout(timeout);
       }
-
-      validateResponseBoundary(response, origin);
-      const payload = await readJson(response);
-      if (response.status === 401 || response.status === 403) options.onAuthorizationLost?.();
-      if (response.status === 401 && safeRead && !forced) { forced = true; continue; }
-      if (!response.ok) throw parseProblem(payload, response.status);
-      try { return schema.parse(payload); }
-      catch { throw invalidResponse("API response did not match its contract"); }
     }
   }
 
