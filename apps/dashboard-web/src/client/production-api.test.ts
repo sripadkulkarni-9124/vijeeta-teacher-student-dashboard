@@ -98,6 +98,58 @@ describe("production API client", () => {
     });
   });
 
+  it("accepts the canonical V2 profile envelope and exposes active production roles only", async () => {
+    const auth = authSession();
+    const api = createProductionApi({
+      auth,
+      transport: vi.fn(async () => new Response(JSON.stringify({
+        profile: {
+          internalProfileId: "profile-uid-1",
+          firebaseUid: "uid-1",
+          verifiedEmail: "aarav@example.test",
+          displayName: "Aarav Kulkarni",
+          roles: { student: "active", teacher: "pending", admin: "active" },
+          activeRole: "student",
+          onboardingCompleted: true,
+          schemaVersion: 2,
+          createdAt: "2026-08-28T08:00:00.000Z",
+          updatedAt: "2026-08-28T08:00:00.000Z",
+        },
+      }), { status: 200 })),
+    });
+
+    await expect(api.getProfile()).resolves.toEqual({
+      user: auth.currentUser,
+      activeRole: "student",
+      allowedRoles: ["student"],
+      onboardingComplete: true,
+    });
+  });
+
+  it("rejects unknown canonical profile fields instead of accepting client-authored roles", async () => {
+    const auth = authSession();
+    const api = createProductionApi({
+      auth,
+      transport: vi.fn(async () => new Response(JSON.stringify({
+        profile: {
+          internalProfileId: "profile-uid-1",
+          firebaseUid: "uid-1",
+          verifiedEmail: "aarav@example.test",
+          displayName: "Aarav Kulkarni",
+          roles: { student: "active" },
+          activeRole: "student",
+          onboardingCompleted: true,
+          schemaVersion: 2,
+          createdAt: "2026-08-28T08:00:00.000Z",
+          updatedAt: "2026-08-28T08:00:00.000Z",
+          allowedRoles: ["teacher"],
+        },
+      }), { status: 200 })),
+    });
+
+    await expect(api.getProfile()).rejects.toMatchObject({ kind: "invalid-response" });
+  });
+
   it("surfaces unauthorized and malformed production responses", async () => {
     const auth = authSession();
     const unauthorized = createProductionApi({

@@ -20,6 +20,7 @@ import {
 type StoredDocument = Record<string, unknown>;
 type Write =
   | { operation: "create"; path: string; data: StoredDocument }
+  | { operation: "set"; path: string; data: StoredDocument }
   | { operation: "update"; path: string; data: StoredDocument };
 
 class FakeDocumentReference implements FirestoreDashboardDocumentReference {
@@ -45,6 +46,7 @@ class FakeQuery implements FirestoreQuery {
   constructor(
     protected readonly database: FakeFirestore,
     private readonly collectionPath: string,
+    private readonly scope: "collection" | "group" = "collection",
     private readonly filters: ReadonlyArray<{ field: string; value: unknown }> = [],
     private readonly ordering: ReadonlyArray<{ field: string; direction: "asc" | "desc" }> = [],
     private readonly maximum?: number,
@@ -53,25 +55,27 @@ class FakeQuery implements FirestoreQuery {
 
   where(field: string, operator: "==", value: unknown): FirestoreQuery {
     expect(operator).toBe("==");
-    return new FakeQuery(this.database, this.collectionPath, [...this.filters, { field, value }], this.ordering, this.maximum, this.cursor);
+    return new FakeQuery(this.database, this.collectionPath, this.scope, [...this.filters, { field, value }], this.ordering, this.maximum, this.cursor);
   }
 
   orderBy(field: string, direction: "asc" | "desc" = "asc"): FirestoreQuery {
-    return new FakeQuery(this.database, this.collectionPath, this.filters, [...this.ordering, { field, direction }], this.maximum, this.cursor);
+    return new FakeQuery(this.database, this.collectionPath, this.scope, this.filters, [...this.ordering, { field, direction }], this.maximum, this.cursor);
   }
 
   limit(maximum: number): FirestoreQuery {
-    return new FakeQuery(this.database, this.collectionPath, this.filters, this.ordering, maximum, this.cursor);
+    return new FakeQuery(this.database, this.collectionPath, this.scope, this.filters, this.ordering, maximum, this.cursor);
   }
 
   startAfter(...values: unknown[]): FirestoreQuery {
-    return new FakeQuery(this.database, this.collectionPath, this.filters, this.ordering, this.maximum, values);
+    return new FakeQuery(this.database, this.collectionPath, this.scope, this.filters, this.ordering, this.maximum, values);
   }
 
   async get(): Promise<FirestoreQuerySnapshot> {
     const prefix = `${this.collectionPath}/`;
     let documents = [...this.database.documents.entries()]
-      .filter(([path]) => path.startsWith(prefix) && !path.slice(prefix.length).includes("/"))
+      .filter(([path]) => this.scope === "collection"
+        ? path.startsWith(prefix) && !path.slice(prefix.length).includes("/")
+        : path.split("/").at(-2) === this.collectionPath)
       .filter(([, data]) => this.filters.every((filter) => data[filter.field] === filter.value));
     documents = documents.sort((left, right) => this.compareDocuments(left, right));
     if (this.cursor !== undefined) documents = documents.filter((document) => this.compareDocumentToCursor(document) > 0);
@@ -125,11 +129,16 @@ class FakeFirestore implements FirestoreDashboardLike {
     return new FakeCollectionReference(name, this);
   }
 
+  collectionGroup(name: string): FirestoreQuery {
+    return new FakeQuery(this, name, "group");
+  }
+
   async runTransaction<T>(work: (transaction: FirestoreDashboardTransaction) => Promise<T>): Promise<T> {
     const writes: Write[] = [];
     const transaction: FirestoreDashboardTransaction = {
       get: async (reference) => this.snapshot(reference.path),
       create: (reference, data) => { writes.push({ operation: "create", path: reference.path, data }); },
+      set: (reference, data) => { writes.push({ operation: "set", path: reference.path, data }); },
       update: (reference, data) => { writes.push({ operation: "update", path: reference.path, data }); },
     };
     const result = await work(transaction);
@@ -141,7 +150,7 @@ class FakeFirestore implements FirestoreDashboardLike {
       if (write.operation === "create" && projected.has(write.path)) throw Object.assign(new Error("already exists"), { code: 6 });
       if (write.operation === "update" && !projected.has(write.path)) throw new Error("missing update target");
       const current = projected.get(write.path) ?? {};
-      projected.set(write.path, write.operation === "create" ? structuredClone(write.data) : { ...current, ...structuredClone(write.data) });
+      projected.set(write.path, write.operation === "update" ? { ...current, ...structuredClone(write.data) } : structuredClone(write.data));
     }
     this.documents.clear();
     for (const [path, data] of projected) this.documents.set(path, data);
@@ -215,6 +224,43 @@ function context(reason?: string): MutationContext {
   return { now: NOW, correlationId: CORRELATION_ID, ...(reason === undefined ? {} : { reason }) };
 }
 
+function seedClassroom(database: FakeFirestore, id: string, updatedAt: string): void {
+  database.documents.set(`classrooms/${id}`, {
+    id,
+    ownerUid: "teacher-uid",
+    name: `Class ${id}`,
+    status: "active",
+    createdAt: updatedAt,
+    updatedAt,
+  });
+}
+
+function seedInvite(
+  database: FakeFirestore,
+  id: string,
+  options: { classroomId?: string; status?: "pending" | "accepted" | "revoked" | "expired"; delivery?: "pending" | "sent" | "failed" | "redelivery_requested" } = {},
+): void {
+  const classroomId = options.classroomId ?? "class-1";
+  const status = options.status ?? "pending";
+  const accepted = status === "accepted";
+  database.documents.set(`classrooms/${classroomId}/invites/${id}`, {
+    id,
+    classroomId,
+    ownerUid: "teacher-uid",
+    normalizedEmail: `${id}@example.test`,
+    tokenDigest: id.padEnd(64, "d"),
+    tokenVersion: 3,
+    expiresAt: "2026-09-04T08:00:00.000Z",
+    status,
+    delivery: options.delivery ?? "failed",
+    ...((options.delivery ?? "failed") === "failed" ? { deliveryErrorCategory: "retryable" } : {}),
+    acceptedUid: accepted ? "student-uid" : null,
+    acceptedAt: accepted ? NOW : null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+}
+
 function storeFor(database: FakeFirestore, emitter = new CapturingAuditEmitter()): { store: FirestoreDashboardStore; emitter: CapturingAuditEmitter } {
   let sequence = 0;
   return {
@@ -255,6 +301,7 @@ describe("FirestoreDashboardStore", () => {
     expect("delete" in ({
       get: async (reference: FirestoreDashboardDocumentReference) => database.snapshot(reference.path),
       create: () => {},
+      set: () => {},
       update: () => {},
     } satisfies FirestoreDashboardTransaction)).toBe(false);
   });
@@ -273,6 +320,36 @@ describe("FirestoreDashboardStore", () => {
     expect(database.created("auditEvents")).toHaveLength(1);
     expect(database.created("auditEvents")[0]?.data).toMatchObject({ action: "admin.bootstrap", actorUid: "admin-uid" });
     expect(emitter.events.map((auditEvent) => auditEvent.action)).toEqual(["admin.bootstrap"]);
+  });
+
+  it("reads an historical legacy profile and normalizes it to canonical V2 on bootstrap", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    database.documents.set("profiles/admin-uid", {
+      internalProfileId: "legacy-admin-profile",
+      firebaseUid: "admin-uid",
+      allowedRoles: ["teacher"],
+      activeRole: "teacher",
+      onboardingCompleted: true,
+      createdAt: NOW,
+      updatedAt: NOW,
+    });
+
+    await expect(store.getProfile("admin-uid")).resolves.toMatchObject({
+      internalProfileId: "legacy-admin-profile",
+      roles: { teacher: "active" },
+      activeRole: "teacher",
+      schemaVersion: 2,
+    });
+    const bootstrapped = await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+
+    expect(bootstrapped.roles).toEqual({ teacher: "active", admin: "active" });
+    expect(database.documents.get("profiles/admin-uid")).toMatchObject({
+      schemaVersion: 2,
+      roles: { teacher: "active", admin: "active" },
+      activeRole: "admin",
+    });
+    expect(database.documents.get("profiles/admin-uid")).not.toHaveProperty("allowedRoles");
   });
 
   it("rejects an idempotent bootstrap retry when the verified email changed", async () => {
@@ -426,6 +503,120 @@ describe("FirestoreDashboardStore", () => {
       limit: 1,
       cursor: first.nextCursor,
     })).rejects.toMatchObject({ code: "pagination_cursor_invalid" });
+  });
+
+  it("paginates every classroom for an active multi-role Admin independently of activeRole", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    database.documents.set("profiles/admin-uid", {
+      ...database.documents.get("profiles/admin-uid"),
+      roles: { admin: "active", teacher: "active" },
+      activeRole: "teacher",
+    });
+    for (let index = 0; index < 105; index += 1) {
+      seedClassroom(
+        database,
+        `class-${String(index).padStart(3, "0")}`,
+        new Date(Date.parse("2026-08-28T12:00:00.000Z") - index * 1_000).toISOString(),
+      );
+    }
+
+    const first = await store.listClassrooms(adminPrincipal, { limit: 100 });
+    expect(first.items).toHaveLength(100);
+    expect(first.items[0]?.id).toBe("class-000");
+    expect(first.nextCursor).not.toBeNull();
+    if (first.nextCursor === null) throw new Error("expected classroom cursor");
+    const second = await store.listClassrooms(adminPrincipal, { limit: 100, cursor: first.nextCursor });
+
+    expect(second.items.map((item) => item.id)).toEqual([
+      "class-100", "class-101", "class-102", "class-103", "class-104",
+    ]);
+    expect(second.nextCursor).toBeNull();
+  });
+
+  it("lists and resolves invitations by server-side ID only for an active Admin", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    seedInvite(database, "invite-a", { classroomId: "class-a" });
+    seedInvite(database, "invite-b", { classroomId: "class-b", delivery: "pending" });
+
+    const page = await store.listInvitations(adminPrincipal, { limit: 1 });
+    expect(page.items).toHaveLength(1);
+    expect(page.nextCursor).not.toBeNull();
+    if (page.nextCursor === null) throw new Error("expected invitation cursor");
+    const nextPage = await store.listInvitations(adminPrincipal, { limit: 1, cursor: page.nextCursor });
+    expect(nextPage.items).toHaveLength(1);
+    expect(nextPage.items[0]?.id).not.toBe(page.items[0]?.id);
+    expect(nextPage.nextCursor).toBeNull();
+    await expect(store.getInvitationById(adminPrincipal, "invite-a")).resolves.toMatchObject({
+      id: "invite-a", classroomId: "class-a",
+    });
+    await expect(store.getInvitationById(adminPrincipal, "missing")).resolves.toBeNull();
+    await expect(store.getInvitationById(teacherPrincipal, "invite-a")).rejects.toMatchObject({ code: "admin_required" });
+
+    seedInvite(database, "invite-a", { classroomId: "class-c" });
+    await expect(store.getInvitationById(adminPrincipal, "invite-a")).rejects.toMatchObject({ code: "invitation_identity_collision" });
+  });
+
+  it("revokes only pending invitations and writes the audit mirror atomically", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    seedInvite(database, "invite-revoke", { classroomId: "class-a" });
+    seedInvite(database, "invite-accepted", { classroomId: "class-b", status: "accepted", delivery: "sent" });
+
+    const revoked = await store.revokeInvitationById(adminPrincipal, "invite-revoke", context("Recipient withdrawn"));
+    expect(revoked.status).toBe("revoked");
+    expect(database.created("auditEvents").at(-1)?.data).toMatchObject({
+      action: "invite.revoked", targetId: "invite-revoke", reason: "Recipient withdrawn",
+    });
+    await expect(store.revokeInvitationById(adminPrincipal, "missing", context("Withdraw"))).rejects.toMatchObject({ code: "invitation_not_found" });
+    await expect(store.revokeInvitationById(adminPrincipal, "invite-accepted", context("Withdraw"))).rejects.toMatchObject({ code: "invitation_transition_invalid" });
+  });
+
+  it("records redelivery intent without rotating secrets or claiming delivery", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    seedInvite(database, "invite-redelivery", { classroomId: "class-a" });
+    const before = structuredClone(database.documents.get("classrooms/class-a/invites/invite-redelivery"));
+
+    const requested = await store.requestInvitationRedelivery(
+      adminPrincipal,
+      "invite-redelivery",
+      context("Recipient requested a fresh link"),
+    );
+
+    expect(requested).toMatchObject({ delivery: "redelivery_requested", tokenVersion: 3, deliveryErrorCategory: null });
+    expect(requested.tokenDigest).toBe(before?.tokenDigest);
+    expect(database.created("auditEvents").at(-1)?.data).toMatchObject({
+      action: "invite.redelivery_requested", targetId: "invite-redelivery",
+    });
+    await expect(store.requestInvitationRedelivery(
+      adminPrincipal,
+      "invite-redelivery",
+      context("Duplicate request"),
+    )).rejects.toMatchObject({ code: "invitation_transition_invalid" });
+  });
+
+  it("rolls back an invitation transition when its audit mirror cannot be created", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+    seedInvite(database, "invite-audit-failure", { classroomId: "class-a" });
+    database.failCreateCollection = "auditEvents";
+
+    await expect(store.revokeInvitationById(
+      adminPrincipal,
+      "invite-audit-failure",
+      context("Recipient withdrawn"),
+    )).rejects.toThrow("injected create failure");
+
+    expect(database.documents.get("classrooms/class-a/invites/invite-audit-failure")).toMatchObject({
+      status: "pending", delivery: "failed",
+    });
   });
 
   it("creates a pending Teacher profile and a hashed verified-email index in one transaction", async () => {

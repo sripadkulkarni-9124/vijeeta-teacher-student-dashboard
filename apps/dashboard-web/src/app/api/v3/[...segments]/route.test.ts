@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { configureV3ForTests, GET, resetV3ForTests } from "./route";
 import { InMemoryProfileStore } from "../../../../server/profile-store";
 
@@ -40,6 +40,34 @@ describe("V3 read-only BFF route", () => {
     configureV3ForTests({ profiles, verifier: { verify: async () => ({ uid: "verified-uid" }) }, adapter: { read: async () => new Response("unexpected") } });
     const response = await GET(new Request("http://localhost/api/v3/shared/mode", { headers: { authorization: "Bearer real" } }), { params: Promise.resolve({ segments: ["shared", "mode"] }) });
     expect(response.status).toBe(403);
+  });
+
+  it("denies a canonical pending Teacher projection before calling the V3 adapter", async () => {
+    const read = vi.fn(async () => new Response("unexpected"));
+    configureV3ForTests({
+      profiles: {
+        getByFirebaseUid: async () => ({
+          internalProfileId: "p-pending",
+          firebaseUid: "teacher-pending",
+          allowedRoles: [],
+          activeRole: null,
+          onboardingCompleted: true,
+          createdAt: "2026-08-27T00:00:00.000Z",
+          updatedAt: "2026-08-27T00:00:00.000Z",
+        }),
+        onboard: vi.fn(),
+      },
+      verifier: { verify: async () => ({ uid: "teacher-pending" }) },
+      adapter: { read },
+    });
+
+    const response = await GET(
+      new Request("http://localhost/api/v3/paperdesk/jobs", { headers: { authorization: "Bearer real" } }),
+      { params: Promise.resolve({ segments: ["paperdesk", "jobs"] }) },
+    );
+
+    expect(response.status).toBe(403);
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("rejects a malformed profile even when a lookup implementation returns it", async () => {

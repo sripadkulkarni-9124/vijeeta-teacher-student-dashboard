@@ -1,3 +1,5 @@
+import { DashboardProfileResponseSchema } from "@vijeeta/api-contracts";
+
 export type ProductionRole = "student" | "teacher";
 
 export interface ProductionUser {
@@ -63,6 +65,32 @@ function parseProfile(value: unknown, fallbackUser: ProductionUser | null = null
   if (value === null) return null;
   if (!value || typeof value !== "object") throw new ProductionApiError("Invalid profile response", "invalid-response");
   const candidate = value as Record<string, unknown>;
+  const canonical = DashboardProfileResponseSchema.safeParse(value);
+  if (canonical.success) {
+    const profile = canonical.data.profile;
+    if (fallbackUser !== null && profile.firebaseUid !== fallbackUser.uid) {
+      throw new ProductionApiError("Profile does not belong to the signed-in user", "invalid-response");
+    }
+    const allowedRoles: ProductionRole[] = [];
+    if (profile.roles.student === "active") allowedRoles.push("student");
+    if (profile.roles.teacher === "active") allowedRoles.push("teacher");
+    const activeRole = isRole(profile.activeRole) && allowedRoles.includes(profile.activeRole)
+      ? profile.activeRole
+      : null;
+    return {
+      user: {
+        uid: profile.firebaseUid,
+        email: profile.verifiedEmail,
+        displayName: profile.displayName,
+      },
+      activeRole,
+      allowedRoles,
+      onboardingComplete: profile.onboardingCompleted,
+    };
+  }
+  if ("profile" in candidate) {
+    throw new ProductionApiError("Invalid profile response", "invalid-response");
+  }
   if (typeof candidate.firebaseUid === "string" && fallbackUser && candidate.firebaseUid !== fallbackUser.uid) {
     throw new ProductionApiError("Profile does not belong to the signed-in user", "invalid-response");
   }

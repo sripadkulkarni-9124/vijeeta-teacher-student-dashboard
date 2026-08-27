@@ -147,6 +147,9 @@ export function parseRouteId(candidate: unknown): string {
     || candidate.length === 0
     || candidate.length > 128
     || candidate !== candidate.trim()
+    || candidate === "."
+    || candidate === ".."
+    || /^__.*__$/.test(candidate)
     || candidate.includes("/")
     || [...candidate].some((character) => {
       const point = character.codePointAt(0) ?? 0;
@@ -244,20 +247,25 @@ function mapError(error: unknown): HttpError {
     case "verified_email_required":
       return new HttpError(403, "forbidden", "This action is not permitted");
     case "profile_not_found":
-      return new HttpError(404, "profile_not_found", "Profile onboarding is required");
+      return new HttpError(404, "profile_not_found", "Target profile was not found");
     case "classroom_not_found":
       return new HttpError(404, "classroom_not_found", "Classroom was not found");
+    case "invitation_not_found":
+      return new HttpError(404, "invitation_not_found", "Invitation was not found");
     case "pagination_cursor_invalid":
     case "reason_required":
       return new HttpError(400, "invalid_request", "Request validation failed");
     case "profile_exists":
     case "teacher_transition_invalid":
     case "classroom_transition_invalid":
+    case "invitation_transition_invalid":
       return new HttpError(409, "conflict", "The requested state transition is not available");
     case "email_index_collision":
     case "email_index_invalid":
     case "verified_email_changed":
       return new HttpError(409, "identity_conflict", "The verified identity cannot be used");
+    case "invitation_identity_collision":
+      return new HttpError(409, "conflict", "Invitation identity is unavailable");
     default:
       return new HttpError(503, "service_unavailable", "The dashboard service is temporarily unavailable", true);
   }

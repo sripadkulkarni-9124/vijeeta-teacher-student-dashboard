@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AdminBootstrapConfigSchema,
+  AdminInvitationListResponseSchema,
   ApiErrorSchema,
   AssignmentInsightsResponseSchema,
   AuditEventSchema,
@@ -122,6 +123,55 @@ describe("connected dashboard contracts", () => {
       updatedAt: timestamp,
       rawToken: "not-persisted",
     })).toThrow();
+  });
+
+  it("models an honest redelivery request without exposing invitation secrets", () => {
+    const invite = {
+      id: "invite-1",
+      classroomId: "classroom-1",
+      ownerUid: "teacher-1",
+      normalizedEmail: "student@example.com",
+      tokenDigest: "d".repeat(64),
+      tokenVersion: 1,
+      expiresAt: "2026-09-04T00:00:00.000Z",
+      status: "pending" as const,
+      delivery: "redelivery_requested" as const,
+      acceptedUid: null,
+      acceptedAt: null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    };
+
+    expect(ClassroomInviteSchema.parse(invite).delivery).toBe("redelivery_requested");
+    expect(AdminInvitationListResponseSchema.parse({ invitations: [{
+      id: invite.id,
+      classroomId: invite.classroomId,
+      ownerUid: invite.ownerUid,
+      tokenVersion: invite.tokenVersion,
+      expiresAt: invite.expiresAt,
+      status: invite.status,
+      delivery: invite.delivery,
+      acceptedUid: invite.acceptedUid,
+      acceptedAt: invite.acceptedAt,
+      createdAt: invite.createdAt,
+      updatedAt: invite.updatedAt,
+    }], nextCursor: null }).invitations).toHaveLength(1);
+    expect(() => AdminInvitationListResponseSchema.parse({
+      invitations: [{ ...invite, rawToken: "secret" }],
+      nextCursor: null,
+    })).toThrow();
+    expect(AuditEventSchema.parse({
+      id: "audit-redelivery",
+      actorUid: "admin-1",
+      actorProfileId: "profile-1",
+      action: "invite.redelivery_requested",
+      targetType: "invite",
+      targetId: invite.id,
+      reason: "Recipient requested a fresh link",
+      correlationId: "123e4567-e89b-12d3-a456-426614174000",
+      canonicalLogInsertId: "audit-redelivery",
+      createdAt: timestamp,
+    }).action).toBe("invite.redelivery_requested");
   });
 
   it("rejects opaque insight payloads instead of passing through upstream data", () => {

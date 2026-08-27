@@ -48,7 +48,7 @@ export async function GET(request: Request, context: { params: Promise<{ segment
   try { profile = await dependencies.profiles.getByFirebaseUid(uid); } catch { return problem("upstream_unavailable", "V3 service unavailable", 503); }
   if (!profile) return problem("forbidden", "Profile onboarding required", 403);
   if (profile.firebaseUid !== uid) return problem("forbidden", "Profile identity mismatch", 403);
-  if (!profile.allowedRoles.includes(profile.activeRole)) return problem("forbidden", "Profile role is not allowed", 403);
+  if (profile.activeRole === null || !profile.allowedRoles.includes(profile.activeRole)) return problem("forbidden", "Profile role is not allowed", 403);
   if (!allowed(profile, route, uid)) return problem("forbidden", "Profile role cannot access this V3 read", 403);
   return dependencies.adapter.read({ path: route.path.replace("{id}", route.params.id ?? "").replace("{sid}", route.params.sid ?? "").replace("{uid}", route.params.uid ?? "").replace("{token}", route.params.token ?? ""), query: route.query, authorization });
 }

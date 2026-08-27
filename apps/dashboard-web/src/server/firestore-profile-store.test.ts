@@ -70,7 +70,7 @@ function storeFor(db: FakeFirestore) {
 }
 
 describe("FirestoreProfileStore", () => {
-  it("persists profiles in the profiles collection keyed by verified UID", async () => {
+  it("persists canonical V2 profiles while projecting pending Teachers to the legacy consumer", async () => {
     const db = new FakeFirestore();
     const store = storeFor(db);
 
@@ -81,13 +81,56 @@ describe("FirestoreProfileStore", () => {
     expect(created).toEqual({
       internalProfileId: "profile-uuid",
       firebaseUid: "verified-firebase-uid",
-      allowedRoles: ["teacher"],
-      activeRole: "teacher",
+      allowedRoles: [],
+      activeRole: null,
       onboardingCompleted: true,
       createdAt: "2026-08-27T12:00:00.000Z",
       updatedAt: "2026-08-27T12:00:00.000Z",
     });
+    expect(db.documents.get("verified-firebase-uid")).toMatchObject({
+      internalProfileId: "profile-uuid",
+      firebaseUid: "verified-firebase-uid",
+      verifiedEmail: null,
+      displayName: null,
+      roles: { teacher: "pending" },
+      activeRole: null,
+      onboardingCompleted: true,
+      schemaVersion: 2,
+    });
+    expect(db.documents.get("verified-firebase-uid")).not.toHaveProperty("allowedRoles");
     await expect(store.getByFirebaseUid("verified-firebase-uid")).resolves.toEqual(created);
+  });
+
+  it("reads both historical legacy and canonical V2 profile documents", async () => {
+    const db = new FakeFirestore();
+    db.documents.set("legacy-uid", {
+      internalProfileId: "legacy-profile",
+      firebaseUid: "legacy-uid",
+      allowedRoles: ["teacher"],
+      activeRole: "teacher",
+      onboardingCompleted: true,
+      createdAt: new FakeTimestamp("2026-08-27T12:00:00.000Z"),
+      updatedAt: new FakeTimestamp("2026-08-27T12:00:00.000Z"),
+    });
+    db.documents.set("canonical-uid", {
+      internalProfileId: "canonical-profile",
+      firebaseUid: "canonical-uid",
+      verifiedEmail: "canonical@example.test",
+      displayName: "Canonical",
+      roles: { student: "active", teacher: "pending", admin: "active" },
+      activeRole: "admin",
+      onboardingCompleted: true,
+      schemaVersion: 2,
+      createdAt: new FakeTimestamp("2026-08-27T12:00:00.000Z"),
+      updatedAt: new FakeTimestamp("2026-08-27T12:00:00.000Z"),
+    });
+
+    await expect(storeFor(db).getByFirebaseUid("legacy-uid")).resolves.toMatchObject({
+      allowedRoles: ["teacher"], activeRole: "teacher",
+    });
+    await expect(storeFor(db).getByFirebaseUid("canonical-uid")).resolves.toMatchObject({
+      allowedRoles: ["student"], activeRole: null,
+    });
   });
 
   it("transactionally creates once under concurrent cross-role onboarding", async () => {
@@ -103,7 +146,7 @@ describe("FirestoreProfileStore", () => {
     const rejected = outcomes.find((outcome) => outcome.status === "rejected");
     expect(rejected).toMatchObject({ status: "rejected", reason: { code: "profile_exists" } });
     const persisted = await store.getByFirebaseUid("same-verified-uid");
-    expect(persisted?.allowedRoles).toEqual([persisted?.activeRole]);
+    expect(persisted?.activeRole === null || persisted?.allowedRoles.includes(persisted.activeRole)).toBe(true);
   });
 
   it("never accepts a caller-supplied document identity during a read", async () => {

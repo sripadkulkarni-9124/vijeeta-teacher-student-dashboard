@@ -52,6 +52,25 @@ export interface AdminRepository {
   ): Promise<DashboardProfileV2>;
 }
 
+export interface AdminClassroomRepository {
+  listClassrooms(principal: VerifiedPrincipal, page: PaginationRequest): Promise<Page<Classroom>>;
+}
+
+export interface AdminInvitationRepository {
+  listInvitations(principal: VerifiedPrincipal, page: PaginationRequest): Promise<Page<ClassroomInvite>>;
+  getInvitationById(principal: VerifiedPrincipal, invitationId: string): Promise<ClassroomInvite | null>;
+  revokeInvitationById(
+    principal: VerifiedPrincipal,
+    invitationId: string,
+    context: MutationContext,
+  ): Promise<ClassroomInvite>;
+  requestInvitationRedelivery(
+    principal: VerifiedPrincipal,
+    invitationId: string,
+    context: MutationContext,
+  ): Promise<ClassroomInvite>;
+}
+
 export interface ClassroomRepository {
   create(
     principal: VerifiedPrincipal,
@@ -130,6 +149,9 @@ export type DashboardStoreErrorCode =
   | "classroom_transition_invalid"
   | "email_index_collision"
   | "email_index_invalid"
+  | "invitation_identity_collision"
+  | "invitation_not_found"
+  | "invitation_transition_invalid"
   | "membership_projection_invalid"
   | "pagination_cursor_invalid"
   | "profile_exists"

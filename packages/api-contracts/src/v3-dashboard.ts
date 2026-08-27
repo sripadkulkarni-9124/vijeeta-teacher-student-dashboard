@@ -74,12 +74,15 @@ export function parseV3ReadRoute(rawSegments: readonly string[], query: URLSearc
 export const DashboardProfileSchema = z.object({
   internalProfileId: z.string().min(1),
   firebaseUid: z.string().min(1),
-  allowedRoles: z.array(DashboardRoleSchema).min(1),
-  activeRole: DashboardRoleSchema,
+  allowedRoles: z.array(DashboardRoleSchema),
+  activeRole: DashboardRoleSchema.nullable(),
   onboardingCompleted: z.boolean(),
   createdAt: z.string().datetime({ offset: true }),
   updatedAt: z.string().datetime({ offset: true }),
-}).strict().refine((profile) => profile.allowedRoles.includes(profile.activeRole), { message: "activeRole must be allowed", path: ["activeRole"] });
+}).strict().refine(
+  (profile) => profile.activeRole === null || profile.allowedRoles.includes(profile.activeRole),
+  { message: "activeRole must be allowed", path: ["activeRole"] },
+);
 export type DashboardProfile = z.infer<typeof DashboardProfileSchema>;
 
 export const ProfileOnboardRequestSchema = z.object({ role: DashboardRoleSchema }).strict();

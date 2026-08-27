@@ -8,6 +8,7 @@ import {
   authenticateRequest,
   parseJsonBody,
   parsePagination,
+  parseRouteId,
   requireNoQuery,
   requireRole,
   serveHttp,
@@ -114,6 +115,13 @@ describe("bounded request parsing", () => {
     expect(() => requireNoQuery(new Request("http://localhost/api/profile"))).not.toThrow();
     expect(() => requireNoQuery(new Request("http://localhost/api/profile?uid=forged"))).toThrow(HttpError);
   });
+
+  it("rejects Firestore-reserved and path-navigation route IDs", () => {
+    for (const candidate of [".", "..", "__name__", "__document_id__", "bad/id", " bad "]) {
+      expect(() => parseRouteId(candidate)).toThrow(HttpError);
+    }
+    expect(parseRouteId("invite-safe_1~x")).toBe("invite-safe_1~x");
+  });
 });
 
 describe("safe HTTP errors", () => {
@@ -133,6 +141,20 @@ describe("safe HTTP errors", () => {
         correlationId: CORRELATION_ID,
         retryable: true,
       },
+    });
+  });
+
+  it("uses target-safe profile-not-found wording in shared store errors", async () => {
+    const { DashboardStoreError } = await import("./dashboard-store");
+    const response = await serveHttp(
+      new Request("http://localhost/api/admin/teachers/missing/approve"),
+      async () => { throw new DashboardStoreError("raw caller-specific message", "profile_not_found"); },
+      { createCorrelationId: () => CORRELATION_ID },
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      error: { code: "profile_not_found", message: "Target profile was not found" },
     });
   });
 });

@@ -41,7 +41,7 @@ export function createProfileRouteHandlers(dependencies: ProfileRouteDependencie
         );
       }
       if (profile === null) {
-        throw new HttpError(404, "profile_not_found", "Profile onboarding is required");
+        throw new HttpError(404, "profile_onboarding_required", "Profile onboarding is required");
       }
       const body = DashboardProfileResponseSchema.parse({ profile });
       return jsonResponse(body, { correlationId });

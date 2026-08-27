@@ -1,7 +1,8 @@
-import { AdminReasonRequestSchema } from "@vijeeta/api-contracts";
+import { AdminReasonRequestSchema, ClassroomInviteResponseSchema } from "@vijeeta/api-contracts";
 
+import type { AdminInvitationRepository } from "../../../../../../server/dashboard-store";
 import {
-  HttpError,
+  jsonResponse,
   parseJsonBody,
   parseRouteId,
   requireNoQuery,
@@ -9,6 +10,7 @@ import {
 } from "../../../../../../server/http";
 import {
   authorizeAdmin,
+  projectInvitation,
   productionAdminDependencies,
   productionDependencyError,
   type AdminRouteDependencies,
@@ -18,17 +20,23 @@ interface InvitationRouteContext {
   params: Promise<{ id: string }>;
 }
 
-export function createRevokeInvitationRouteHandler(dependencies: AdminRouteDependencies) {
-  return (request: Request, routeContext: InvitationRouteContext) => serveHttp(request, async () => {
-    await authorizeAdmin(request, dependencies);
+interface RevokeInvitationRouteDependencies extends AdminRouteDependencies {
+  invitations: AdminInvitationRepository;
+  now?: () => string;
+}
+
+export function createRevokeInvitationRouteHandler(dependencies: RevokeInvitationRouteDependencies) {
+  const now = dependencies.now ?? (() => new Date().toISOString());
+  return (request: Request, routeContext: InvitationRouteContext) => serveHttp(request, async ({ correlationId }) => {
+    const principal = await authorizeAdmin(request, dependencies);
     requireNoQuery(request);
-    parseRouteId((await routeContext.params).id);
-    await parseJsonBody(request, AdminReasonRequestSchema);
-    throw new HttpError(
-      501,
-      "not_implemented",
-      "Invitation revocation awaits server-side target resolution in Task 6",
-    );
+    const id = parseRouteId((await routeContext.params).id);
+    const input = await parseJsonBody(request, AdminReasonRequestSchema);
+    const invitation = await dependencies.invitations.revokeInvitationById(principal, id, {
+      now: now(), correlationId, reason: input.reason,
+    });
+    const body = ClassroomInviteResponseSchema.parse({ invite: projectInvitation(invitation) });
+    return jsonResponse(body, { correlationId });
   }, { createCorrelationId: dependencies.createCorrelationId });
 }
 

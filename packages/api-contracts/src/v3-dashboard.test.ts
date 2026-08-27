@@ -54,6 +54,17 @@ describe("V3 dashboard BFF contracts", () => {
     expect(profile.firebaseUid).toBe("firebase-1");
     expect(ProfileOnboardRequestSchema.parse({ role: "student" }).role).toBe("student");
     expect(() => ProfileOnboardRequestSchema.parse({ role: "teacher", firebaseUid: "forged" })).toThrow();
+
+    expect(DashboardProfileSchema.parse({
+      ...profile,
+      allowedRoles: [],
+      activeRole: null,
+    })).toMatchObject({ allowedRoles: [], activeRole: null });
+    expect(() => DashboardProfileSchema.parse({
+      ...profile,
+      allowedRoles: [],
+      activeRole: "teacher",
+    })).toThrow();
   });
 
   it("projects supported upstream responses and drops unapproved fields", () => {

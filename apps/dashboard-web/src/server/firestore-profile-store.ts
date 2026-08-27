@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import {
+  DashboardProfileV2Schema,
   DashboardProfileSchema,
   type DashboardProfile,
+  type DashboardProfileV2,
   type DashboardRole,
 } from "@vijeeta/api-contracts";
 
@@ -61,9 +63,12 @@ export class FirestoreProfileStore implements ProfileStore {
         transaction.create(reference, {
           internalProfileId: this.randomUuid(),
           firebaseUid,
-          allowedRoles: [role],
-          activeRole: role,
+          verifiedEmail: null,
+          displayName: null,
+          roles: role === "student" ? { student: "active" } : { teacher: "pending" },
+          activeRole: role === "student" ? "student" : null,
           onboardingCompleted: true,
+          schemaVersion: 2,
           createdAt: timestamp,
           updatedAt: timestamp,
         });
@@ -99,10 +104,33 @@ function profileFromSnapshot(snapshot: FirestoreDocumentSnapshot, verifiedUid: s
   const data = snapshot.data();
   if (!data) throw new Error("Persisted profile data is unavailable");
   if (data.firebaseUid !== verifiedUid) throw new Error("Persisted profile identity does not match verified Firebase UID");
-  return DashboardProfileSchema.parse({
+  const normalized = {
     ...data,
     createdAt: timestampToIso(data.createdAt),
     updatedAt: timestampToIso(data.updatedAt),
+  };
+  const canonical = DashboardProfileV2Schema.safeParse(normalized);
+  if (canonical.success) return projectCanonicalProfile(canonical.data);
+  return DashboardProfileSchema.parse(normalized);
+}
+
+function projectCanonicalProfile(profile: DashboardProfileV2): DashboardProfile {
+  const allowedRoles: DashboardRole[] = [];
+  if (profile.roles.student === "active") allowedRoles.push("student");
+  if (profile.roles.teacher === "active") allowedRoles.push("teacher");
+  const activeRole = profile.activeRole !== null
+    && (profile.activeRole === "student" || profile.activeRole === "teacher")
+    && allowedRoles.includes(profile.activeRole)
+    ? profile.activeRole
+    : null;
+  return DashboardProfileSchema.parse({
+    internalProfileId: profile.internalProfileId,
+    firebaseUid: profile.firebaseUid,
+    allowedRoles,
+    activeRole,
+    onboardingCompleted: profile.onboardingCompleted,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
   });
 }
 

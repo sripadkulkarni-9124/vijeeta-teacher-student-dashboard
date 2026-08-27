@@ -152,7 +152,7 @@ describe("connected profile routes", () => {
     expect(response.status).toBe(404);
     expect(await response.json()).toEqual({
       error: {
-        code: "profile_not_found",
+        code: "profile_onboarding_required",
         message: "Profile onboarding is required",
         correlationId: CORRELATION_ID,
         retryable: false,

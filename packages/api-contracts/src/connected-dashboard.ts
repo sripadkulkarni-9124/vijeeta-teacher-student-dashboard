@@ -92,7 +92,7 @@ export type Classroom = z.infer<typeof ClassroomSchema>;
 export const ClassroomInviteStatusSchema = z.enum(["pending", "accepted", "revoked", "expired"]);
 export type ClassroomInviteStatus = z.infer<typeof ClassroomInviteStatusSchema>;
 
-export const InviteDeliveryStateSchema = z.enum(["pending", "sent", "failed"]);
+export const InviteDeliveryStateSchema = z.enum(["pending", "sent", "failed", "redelivery_requested"]);
 export type InviteDeliveryState = z.infer<typeof InviteDeliveryStateSchema>;
 
 export const ClassroomInviteSchema = z.object({
@@ -203,6 +203,7 @@ export const AuditActionSchema = z.enum([
   "classroom.restored",
   "invite.created",
   "invite.revoked",
+  "invite.redelivery_requested",
   "invite.redelivered",
   "invite.accepted",
   "assignment.created",
@@ -272,22 +273,22 @@ export type ClassroomListResponse = z.infer<typeof ClassroomListResponseSchema>;
 
 export const InviteClassroomMemberRequestSchema = z.object({ email: NormalizedEmailSchema }).strict();
 export type InviteClassroomMemberRequest = z.infer<typeof InviteClassroomMemberRequestSchema>;
-export const ClassroomInviteResponseSchema = z.object({
-  invite: z.object({
-    id: IdentifierSchema,
-    classroomId: IdentifierSchema,
-    ownerUid: IdentifierSchema,
-    tokenVersion: z.number().int().positive().max(1_000_000),
-    expiresAt: IsoTimestampSchema,
-    status: ClassroomInviteStatusSchema,
-    delivery: InviteDeliveryStateSchema,
-    deliveryErrorCategory: z.enum(["retryable", "permanent"]).nullable().optional(),
-    acceptedUid: IdentifierSchema.nullable(),
-    acceptedAt: IsoTimestampSchema.nullable(),
-    createdAt: IsoTimestampSchema,
-    updatedAt: IsoTimestampSchema,
-  }).strict(),
+export const ClassroomInviteProjectionSchema = z.object({
+  id: IdentifierSchema,
+  classroomId: IdentifierSchema,
+  ownerUid: IdentifierSchema,
+  tokenVersion: z.number().int().positive().max(1_000_000),
+  expiresAt: IsoTimestampSchema,
+  status: ClassroomInviteStatusSchema,
+  delivery: InviteDeliveryStateSchema,
+  deliveryErrorCategory: z.enum(["retryable", "permanent"]).nullable().optional(),
+  acceptedUid: IdentifierSchema.nullable(),
+  acceptedAt: IsoTimestampSchema.nullable(),
+  createdAt: IsoTimestampSchema,
+  updatedAt: IsoTimestampSchema,
 }).strict();
+export type ClassroomInviteProjection = z.infer<typeof ClassroomInviteProjectionSchema>;
+export const ClassroomInviteResponseSchema = z.object({ invite: ClassroomInviteProjectionSchema }).strict();
 export type ClassroomInviteResponse = z.infer<typeof ClassroomInviteResponseSchema>;
 
 export const InspectInvitationRequestSchema = z.object({ token: z.string().min(1).max(1024) }).strict();
@@ -372,6 +373,8 @@ export const AdminReasonRequestSchema = z.object({ reason: BoundedTextSchema(500
 export type AdminReasonRequest = z.infer<typeof AdminReasonRequestSchema>;
 export const AdminProfileListResponseSchema = z.object({ profiles: z.array(DashboardProfileV2Schema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict();
 export type AdminProfileListResponse = z.infer<typeof AdminProfileListResponseSchema>;
+export const AdminInvitationListResponseSchema = z.object({ invitations: z.array(ClassroomInviteProjectionSchema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict();
+export type AdminInvitationListResponse = z.infer<typeof AdminInvitationListResponseSchema>;
 export const AdminAuditListResponseSchema = z.object({ events: z.array(AuditEventSchema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict();
 export type AdminAuditListResponse = z.infer<typeof AdminAuditListResponseSchema>;
 

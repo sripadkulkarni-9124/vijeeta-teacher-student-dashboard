@@ -88,6 +88,23 @@ describe("ProductionDashboard", () => {
     expect(productionApi.readTeacher).not.toHaveBeenCalled();
   });
 
+  it("shows a pending Teacher state without granting either production workspace", async () => {
+    const productionApi = api();
+    productionApi.getProfile = vi.fn(async (): Promise<ProductionProfile> => ({
+      ...profile,
+      activeRole: null,
+      allowedRoles: [],
+      onboardingComplete: true,
+    }));
+    render(<ProductionDashboard api={productionApi} />);
+
+    expect(await screen.findByRole("heading", { name: /choose your workspace/i })).toBeVisible();
+    expect(screen.queryByRole("button", { name: /continue as student/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /continue as teacher/i })).not.toBeInTheDocument();
+    expect(productionApi.readStudent).not.toHaveBeenCalled();
+    expect(productionApi.readTeacher).not.toHaveBeenCalled();
+  });
+
   it("shows unauthorized-domain and logout feedback", async () => {
     const productionApi = api();
     productionApi.auth.currentUser = null;

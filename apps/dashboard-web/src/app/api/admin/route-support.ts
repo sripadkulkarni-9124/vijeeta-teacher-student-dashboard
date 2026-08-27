@@ -1,4 +1,9 @@
-import type { VerifiedPrincipal } from "@vijeeta/api-contracts";
+import {
+  ClassroomInviteProjectionSchema,
+  type ClassroomInvite,
+  type ClassroomInviteProjection,
+  type VerifiedPrincipal,
+} from "@vijeeta/api-contracts";
 
 import { getProductionDashboardRouteDependencies } from "../../../server/dashboard-runtime";
 import {
@@ -24,6 +29,23 @@ export async function authorizeAdmin(
   return principal;
 }
 
+export function projectInvitation(invitation: ClassroomInvite): ClassroomInviteProjection {
+  return ClassroomInviteProjectionSchema.parse({
+    id: invitation.id,
+    classroomId: invitation.classroomId,
+    ownerUid: invitation.ownerUid,
+    tokenVersion: invitation.tokenVersion,
+    expiresAt: invitation.expiresAt,
+    status: invitation.status,
+    delivery: invitation.delivery,
+    ...(invitation.deliveryErrorCategory === undefined ? {} : { deliveryErrorCategory: invitation.deliveryErrorCategory }),
+    acceptedUid: invitation.acceptedUid,
+    acceptedAt: invitation.acceptedAt,
+    createdAt: invitation.createdAt,
+    updatedAt: invitation.updatedAt,
+  });
+}
+
 export async function productionAdminDependencies() {
   const dependencies = await getProductionDashboardRouteDependencies();
   return {
@@ -31,6 +53,8 @@ export async function productionAdminDependencies() {
     profiles: dependencies.store,
     admin: dependencies.store,
     classrooms: dependencies.store,
+    adminClassrooms: dependencies.store,
+    invitations: dependencies.store,
     audit: dependencies.store,
   };
 }
