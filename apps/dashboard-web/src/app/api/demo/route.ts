@@ -2,10 +2,24 @@ import { DashboardRoleSchema, parseDashboardAction, type DashboardProblem } from
 import { DashboardService } from "../../../server/service";
 import { DashboardStoreError } from "../../../server/store";
 
-const defaultService = new DashboardService();
+let defaultService: DashboardService | undefined;
 
 function activeService(): DashboardService {
-  return (globalThis as { __vijeetaDashboardService?: DashboardService }).__vijeetaDashboardService ?? defaultService;
+  const injected = (globalThis as { __vijeetaDashboardService?: DashboardService }).__vijeetaDashboardService;
+  if (injected) return injected;
+  defaultService ??= new DashboardService();
+  return defaultService;
+}
+
+function productionDisabledResponse(): Response {
+  return Response.json(
+    { problem: { code: "not_found", message: "Not found" } },
+    { status: 404, headers: { "cache-control": "no-store" } },
+  );
+}
+
+function productionRuntime(): boolean {
+  return process.env.NODE_ENV === "production" || process.env.VIJEETA_RUNTIME_MODE === "production";
 }
 
 function problemResponse(problem: DashboardProblem, status: number): Response {
@@ -35,6 +49,7 @@ function isValidationError(error: unknown): error is { issues: Array<{ path: Arr
 }
 
 export async function GET(request: Request): Promise<Response> {
+  if (productionRuntime()) return productionDisabledResponse();
   try {
     const role = DashboardRoleSchema.parse(new URL(request.url).searchParams.get("role"));
     return Response.json(await activeService().snapshot(role), { headers: { "cache-control": "no-store" } });
@@ -44,6 +59,7 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
+  if (productionRuntime()) return productionDisabledResponse();
   try {
     const input = parseDashboardAction(await request.json());
     return Response.json(await activeService().dispatch(input), { status: 201, headers: { "cache-control": "no-store" } });

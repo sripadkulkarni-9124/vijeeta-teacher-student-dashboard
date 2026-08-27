@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +7,22 @@ import { DashboardStore } from "../../../server/store";
 import { createDemoServiceForTests, GET, POST } from "./route";
 
 describe("/api/demo", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("is unavailable in the production runtime", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+
+    const getResponse = await GET(new Request("https://dashboard.example/api/demo?role=student"));
+    const postResponse = await POST(new Request("https://dashboard.example/api/demo", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "invite-student", email: "blocked@example.com", classId: "class-1" }),
+    }));
+
+    expect(getResponse.status).toBe(404);
+    expect(postResponse.status).toBe(404);
+  });
+
   it("returns a typed 400 for an invalid role", async () => {
     const response = await GET(new Request("http://localhost/api/demo?role=admin"));
     expect(response.status).toBe(400);

@@ -1,0 +1,28 @@
+export interface V3RuntimeConfig {
+  baseUrl: URL;
+  timeoutMs: number;
+  mode: "production" | "development" | "test";
+  build: string;
+  firestoreDatabaseId: string;
+  firebaseProjectId: string;
+}
+
+export function loadRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): V3RuntimeConfig {
+  const nodeEnv = env.NODE_ENV ?? "development";
+  const mode = env.VIJEETA_RUNTIME_MODE === "production" || nodeEnv === "production" ? "production" : nodeEnv === "test" ? "test" : "development";
+  const baseValue = env.VIJEETA_V3_BASE_URL ?? env.VIJEETA_V3_API_BASE_URL;
+  if (!baseValue) throw new Error("VIJEETA_V3_BASE_URL is required");
+  let baseUrl: URL;
+  try { baseUrl = new URL(baseValue); } catch { throw new Error("VIJEETA_V3_BASE_URL must be an absolute URL"); }
+  if (baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) throw new Error("V3 base URL must not contain credentials or query state");
+  if (mode === "production" && baseUrl.protocol !== "https:") throw new Error("Production V3 base URL must use HTTPS");
+  if (mode === "production" && (env.VIJEETA_DATA_MODE === "fixture" || env.VIJEETA_PERSISTENCE_MODE === "local")) throw new Error("Fixture/local persistence is not allowed in production");
+  const firestoreDatabaseId = env.VIJEETA_FIRESTORE_DATABASE_ID ?? (mode === "production" ? "" : "vijeeta-dashboard");
+  if (firestoreDatabaseId === "default" || firestoreDatabaseId === "(default)") throw new Error("A named Firestore database is required");
+  if (mode === "production" && firestoreDatabaseId !== "vijeeta-dashboard") throw new Error("Production Firestore database must be vijeeta-dashboard");
+  const firebaseProjectId = env.VIJEETA_FIREBASE_PROJECT_ID ?? (mode === "production" ? "" : "neetcompanion-50b1f");
+  if (mode === "production" && firebaseProjectId !== "neetcompanion-50b1f") throw new Error("Production Firebase project must be neetcompanion-50b1f");
+  const timeoutMs = Number(env.VIJEETA_V3_TIMEOUT_MS ?? 5000);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > 15000) throw new Error("V3 timeout must be between 250ms and 15000ms");
+  return { baseUrl, timeoutMs, mode, build: env.VIJEETA_BUILD_ID ?? "unknown", firestoreDatabaseId, firebaseProjectId };
+}
