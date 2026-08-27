@@ -13,6 +13,8 @@ pnpm --filter @vijeeta/dashboard-web dev
 
 Open [http://localhost:3010](http://localhost:3010).
 
+The development command uses the separate `apps/dashboard-web/dev-fixture` Next entry. Its local `/api/demo` route and fixture modules are not part of the production root or production image.
+
 Choose either role on the landing screen. The role choice is remembered locally across reloads; the role switch in the header clears it and lets you move between the teacher and student journeys without signing in.
 
 ## Demo journeys

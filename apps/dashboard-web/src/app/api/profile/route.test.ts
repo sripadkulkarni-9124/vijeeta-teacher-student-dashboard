@@ -8,7 +8,7 @@ describe("profile routes", () => {
   it("checks teacher authority only through the allowlisted PaperDesk config read", async () => {
     const reads: Array<{ path: string; authorization: string; query: URLSearchParams }> = [];
     const eligibility = createTeacherEligibility({
-      read: async (input) => { reads.push(input); return new Response("ok", { status: 200 }); },
+      read: async (input) => { reads.push(input); return Response.json({ creator: true, role: "teacher" }); },
     });
 
     await expect(eligibility.verify("Bearer verified-token")).resolves.toBe(true);
@@ -22,6 +22,23 @@ describe("profile routes", () => {
 
     await expect(createTeacherEligibility({ read: async () => new Response(null, { status: 403 }) }).verify("Bearer denied")).resolves.toBe(false);
     await expect(createTeacherEligibility({ read: async () => new Response(null, { status: 502 }) }).verify("Bearer unavailable")).rejects.toThrow("unavailable");
+  });
+
+  it("does not treat an authoritative 200 response as teacher authority without creator true", async () => {
+    const cases = [
+      Response.json({ creator: false, role: "reviewer" }),
+      Response.json({ role: "reviewer", analytics: true }),
+      Response.json({ creator: "true" }),
+      new Response("not-json", { status: 200, headers: { "content-type": "application/json" } }),
+      new Response(JSON.stringify({ creator: true }), { status: 200, headers: { "content-type": "text/plain" } }),
+    ];
+
+    for (const upstream of cases) {
+      await expect(createTeacherEligibility({ read: async () => upstream }).verify("Bearer token")).resolves.toBe(false);
+    }
+    await expect(createTeacherEligibility({
+      read: async () => new Response(JSON.stringify({ creator: true, padding: "x".repeat(65_536) }), { status: 200, headers: { "content-type": "application/json" } }),
+    }).verify("Bearer token")).resolves.toBe(false);
   });
 
   it("binds first-login onboarding to the verified token UID", async () => {

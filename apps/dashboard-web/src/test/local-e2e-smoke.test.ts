@@ -7,7 +7,7 @@ import {
   GET,
   POST,
   createDemoServiceForTests,
-} from "@/app/api/demo/route";
+} from "../../dev-fixture/app/api/demo/route";
 import { toStudentView } from "@/client/view-models";
 import { DashboardService } from "@/server/service";
 import { DashboardStore } from "@/server/store";

@@ -117,7 +117,7 @@ Use Cloud Run's attached service identity and Secret Manager for any future appr
 
 ## Packaging and immutable image
 
-Build from the repository root with apps/dashboard-web/Dockerfile. The Next configuration uses standalone output and traces from the monorepo root. The final image runs Node 24 as non-root user nextjs, listens on 0.0.0.0:8080, and copies only traced runtime files and static assets. The Dockerfile uses explicit source COPY entries so .local state, caches, manifests, and docs cannot enter the build even when the monorepo root is the Docker context; apps/dashboard-web/.dockerignore separately excludes the same classes for direct app-context tooling. No local fixture data is copied into the image and no production persistence directory is created.
+Build from the repository root with apps/dashboard-web/Dockerfile. The Next configuration uses standalone output and traces from the monorepo root. The final image runs Node 24 as non-root user nextjs, listens on 0.0.0.0:8080, and copies only traced runtime files and static assets. The Dockerfile uses explicit source COPY entries and removes development-only fixture modules before Next builds its production graph, so .local state, caches, manifests, docs, DashboardPrototype, the /api/demo implementation, and the product-fixtures trace cannot enter the standalone runtime even when the monorepo root is the Docker context; apps/dashboard-web/.dockerignore separately excludes the same classes for direct app-context tooling. No local fixture data is copied into the image and no production persistence directory is created.
 
 Local, non-cloud checks:
 

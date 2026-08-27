@@ -1,6 +1,6 @@
 import { DashboardRoleSchema, parseDashboardAction, type DashboardProblem } from "@vijeeta/api-contracts";
-import { DashboardService } from "../../../server/service";
-import { DashboardStoreError } from "../../../server/store";
+import { DashboardService } from "../../../../src/server/service";
+import { DashboardStoreError } from "../../../../src/server/store";
 
 let defaultService: DashboardService | undefined;
 
@@ -9,17 +9,6 @@ function activeService(): DashboardService {
   if (injected) return injected;
   defaultService ??= new DashboardService();
   return defaultService;
-}
-
-function productionDisabledResponse(): Response {
-  return Response.json(
-    { problem: { code: "not_found", message: "Not found" } },
-    { status: 404, headers: { "cache-control": "no-store" } },
-  );
-}
-
-function productionRuntime(): boolean {
-  return process.env.NODE_ENV === "production" || process.env.VIJEETA_RUNTIME_MODE === "production";
 }
 
 function problemResponse(problem: DashboardProblem, status: number): Response {
@@ -49,7 +38,6 @@ function isValidationError(error: unknown): error is { issues: Array<{ path: Arr
 }
 
 export async function GET(request: Request): Promise<Response> {
-  if (productionRuntime()) return productionDisabledResponse();
   try {
     const role = DashboardRoleSchema.parse(new URL(request.url).searchParams.get("role"));
     return Response.json(await activeService().snapshot(role), { headers: { "cache-control": "no-store" } });
@@ -59,10 +47,9 @@ export async function GET(request: Request): Promise<Response> {
 }
 
 export async function POST(request: Request): Promise<Response> {
-  if (productionRuntime()) return productionDisabledResponse();
   try {
     const input = parseDashboardAction(await request.json());
-    return Response.json(await activeService().dispatch(input), { status: 201, headers: { "cache-control": "no-store" } });
+    return Response.json(await activeService().dispatch(input), { status: 201 });
   } catch (error) {
     if (isValidationError(error) || error instanceof SyntaxError) return invalidRequest(error);
     if (error instanceof DashboardStoreError) return problemResponse({ code: "invalid_request", message: error.message }, error.code === "not_found" ? 404 : 409);
@@ -71,6 +58,5 @@ export async function POST(request: Request): Promise<Response> {
 }
 
 export function createDemoServiceForTests(testService: DashboardService): void {
-  // The route remains dependency-free in production while tests can inject an isolated store.
   (globalThis as { __vijeetaDashboardService?: DashboardService }).__vijeetaDashboardService = testService;
 }

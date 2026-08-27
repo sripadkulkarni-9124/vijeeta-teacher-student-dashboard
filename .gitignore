@@ -101,6 +101,7 @@ vjee-web-scaffold.tgz
 coverage/
 .local/
 apps/*/.next/
+apps/*/**/.next/
 apps/*/.expo/
 .pnpm-store/
 

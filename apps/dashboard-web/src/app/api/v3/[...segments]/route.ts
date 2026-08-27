@@ -20,11 +20,10 @@ async function deps(): Promise<V3Dependencies | undefined> {
 
 function allowed(profile: DashboardProfile, route: V3ReadRoute, uid: string): boolean {
   if (profile.activeRole === "student") {
-    if (route.path === "/v3/shared/mode" || route.path === "/v3/shared/tests" || route.path === "/v3/test/{id}") return true;
-    if (route.path === "/v3/test/{id}/review" || route.path === "/v3/test/{id}/analysis") return route.query.get("user_id") === uid;
+    if (route.path === "/v3/shared/mode" || route.path === "/v3/shared/tests") return true;
     return (route.path === "/v3/analysis/tests" || route.path === "/v3/analysis/overall" || route.path === "/v3/analysis/pyq") && route.query.get("user_id") === uid;
   }
-  return route.path === "/v3/paperdesk/config" || route.path === "/v3/paperdesk/jobs" || route.path === "/v3/paperdesk/jobs/{id}";
+  return route.path === "/v3/paperdesk/config" || route.path === "/v3/paperdesk/jobs";
 }
 
 async function paramsOf(context: { params: Promise<{ segments: string[] }> | { segments: string[] } }): Promise<string[]> {

@@ -7,7 +7,7 @@ describe("V3ReadAdapter", () => {
       expect(input).toBe("https://v3.example.test/v3/shared/mode");
       expect(init?.method).toBe("GET");
       expect(init?.headers).toEqual({ authorization: "Bearer firebase-token" });
-      return new Response(JSON.stringify({ focused: false }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(JSON.stringify({ audience: false, focused: false, teachers: [], n_tests: 0 }), { status: 200, headers: { "content-type": "application/json" } });
     });
     const adapter = new V3ReadAdapter({ baseUrl: new URL("https://v3.example.test"), fetchImpl: upstream });
     const response = await adapter.read({ path: "/v3/shared/mode", query: new URLSearchParams(), authorization: "Bearer firebase-token" });

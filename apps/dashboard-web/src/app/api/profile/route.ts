@@ -14,6 +14,8 @@ interface ProfileDependencies {
   teacherEligibility?: TeacherEligibility;
 }
 
+const TEACHER_ELIGIBILITY_MAX_BYTES = 65_536;
+
 let configured: ProfileDependencies | undefined;
 
 async function dependencies() {
@@ -91,9 +93,18 @@ export function createTeacherEligibility(adapter: Pick<V3ReadAdapter, "read">): 
   return {
     verify: async (authorization: string) => {
       const upstream = await adapter.read({ path: "/v3/paperdesk/config", query: new URLSearchParams(), authorization });
-      if (upstream.ok) return true;
       if (upstream.status === 401 || upstream.status === 403) return false;
-      throw new Error("Teacher eligibility service unavailable");
+      if (!upstream.ok) throw new Error("Teacher eligibility service unavailable");
+      const contentType = upstream.headers.get("content-type")?.split(";", 1)[0].trim().toLowerCase();
+      if (contentType !== "application/json") return false;
+      const bytes = await upstream.arrayBuffer();
+      if (bytes.byteLength > TEACHER_ELIGIBILITY_MAX_BYTES) return false;
+      let payload: unknown;
+      try {
+        payload = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+      } catch { return false; }
+      if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return false;
+      return (payload as Record<string, unknown>).creator === true;
     },
   };
 }

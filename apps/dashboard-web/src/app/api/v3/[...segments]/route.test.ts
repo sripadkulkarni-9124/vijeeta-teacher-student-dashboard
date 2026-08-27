@@ -85,7 +85,7 @@ describe("V3 read-only BFF route", () => {
         }),
         { params: Promise.resolve({ segments: ["test", "test-1", leaf] }) },
       );
-      expect(response.status).toBe(403);
+      expect(response.status).toBe(400);
     }
   });
 

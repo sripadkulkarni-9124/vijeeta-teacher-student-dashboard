@@ -1,4 +1,5 @@
 import { sanitizeError } from "./redaction";
+import { projectV3Response, type V3ReadPath } from "@vijeeta/api-contracts";
 
 export interface V3ReadInput { path: string; query: URLSearchParams; authorization: string; }
 export type V3Fetch = (input: string, init?: RequestInit) => Promise<Response>;
@@ -38,11 +39,14 @@ export class V3ReadAdapter {
       const contentLength = upstream.headers.get("content-length");
       if (contentLength !== null && (!/^\d+$/.test(contentLength) || Number(contentLength) > this.maxResponseBytes)) return this.failure();
       const body = await this.readBoundedBody(upstream);
-      try { JSON.parse(new TextDecoder().decode(body)); } catch { return this.failure(); }
+      let upstreamPayload: unknown;
+      try { upstreamPayload = JSON.parse(new TextDecoder().decode(body)); } catch { return this.failure(); }
+      const projectedPayload = projectV3Response(input.path as V3ReadPath, upstreamPayload);
+      const projectedBody = new TextEncoder().encode(JSON.stringify(projectedPayload)).buffer;
       const headers = new Headers();
       if (contentType) headers.set("content-type", contentType);
       headers.set("cache-control", "no-store");
-      return new Response(body, { status: upstream.status, headers });
+      return new Response(projectedBody, { status: upstream.status, headers });
     } catch (error) {
       const safe = sanitizeError(error);
       this.logger?.(`v3 upstream failure: ${safe}`);

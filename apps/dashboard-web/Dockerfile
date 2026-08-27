@@ -43,7 +43,9 @@ RUN test "${NEXT_PUBLIC_DASHBOARD_MODE}" = "v3-proxy" \
   && test "${NEXT_PUBLIC_FIREBASE_PROJECT_ID}" = "neetcompanion-50b1f" \
   && test "${NEXT_PUBLIC_FIREBASE_APP_ID}" = "1:840759107103:web:84391539f65c7aa4abff2a"
 
-COPY packages packages
+COPY packages/api-contracts packages/api-contracts
+COPY packages/configuration packages/configuration
+COPY packages/design-system packages/design-system
 COPY apps/dashboard-web/package.json apps/dashboard-web/package.json
 COPY apps/dashboard-web/next.config.ts apps/dashboard-web/next.config.ts
 COPY apps/dashboard-web/tsconfig.json apps/dashboard-web/tsconfig.json
@@ -54,7 +56,24 @@ COPY apps/dashboard-web/src apps/dashboard-web/src
 # the production typecheck.
 RUN find apps/dashboard-web/src -type f \( -name '*.test.*' -o -name '*.spec.*' \) -delete
 
+# These modules belong only to the development fixture entry. Remove them
+# before Next builds its production graph so they cannot be traced into the
+# standalone runtime, even when the monorepo context contains the source.
+RUN rm -f \
+  apps/dashboard-web/src/components/dashboard-prototype.tsx \
+  apps/dashboard-web/src/components/role-landing.tsx \
+  apps/dashboard-web/src/client/demo-api.ts \
+  apps/dashboard-web/src/client/view-models.ts \
+  apps/dashboard-web/src/server/store.ts \
+  apps/dashboard-web/src/server/service.ts
+
 RUN pnpm --filter @vijeeta/dashboard-web build
+
+# The workspace package manifest still contains the development-only fixture
+# dependency so the separate fixture entry can run locally. Remove that
+# declaration from Next's generated standalone manifest before the runtime
+# stage; no fixture package is traced by the production graph.
+RUN node --input-type=module -e 'import { readFileSync, writeFileSync } from "node:fs"; const file = "apps/dashboard-web/.next/standalone/apps/dashboard-web/package.json"; const pkg = JSON.parse(readFileSync(file, "utf8")); if (pkg.dependencies) delete pkg.dependencies["@vijeeta/product-fixtures"]; writeFileSync(file, JSON.stringify(pkg));'
 
 FROM node:24.19.0-bookworm-slim AS runner
 

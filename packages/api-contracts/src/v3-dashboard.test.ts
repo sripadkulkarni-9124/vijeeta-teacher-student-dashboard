@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   DashboardProfileSchema,
   ProfileOnboardRequestSchema,
+  projectV3Response,
   parseV3ReadRoute,
   V3_READ_PATHS,
 } from "./v3-dashboard";
@@ -11,15 +12,11 @@ describe("V3 dashboard BFF contracts", () => {
     expect(V3_READ_PATHS).toEqual(expect.arrayContaining([
       "/v3/shared/mode",
       "/v3/shared/tests",
-      "/v3/test/{id}",
-      "/v3/test/{id}/review",
-      "/v3/test/{id}/analysis",
       "/v3/analysis/tests",
       "/v3/analysis/overall",
       "/v3/analysis/pyq",
       "/v3/paperdesk/config",
       "/v3/paperdesk/jobs",
-      "/v3/paperdesk/jobs/{id}",
     ]));
     expect(V3_READ_PATHS).not.toContain("/v3/paperdesk/shares");
     expect(V3_READ_PATHS).not.toContain("/v3/shared-web/enter/{token}");
@@ -30,6 +27,8 @@ describe("V3 dashboard BFF contracts", () => {
     expect(() => parseV3ReadRoute(["shared-web", "resolve", "opaque-token"], new URLSearchParams())).toThrow();
     expect(() => parseV3ReadRoute(["paperdesk", "shares", "sid", "results"], new URLSearchParams())).toThrow();
     expect(() => parseV3ReadRoute(["paperdesk", "shares", "sid", "student", "uid", "analysis"], new URLSearchParams())).toThrow();
+    expect(() => parseV3ReadRoute(["test", "id"], new URLSearchParams())).toThrow();
+    expect(() => parseV3ReadRoute(["paperdesk", "jobs", "id"], new URLSearchParams())).toThrow();
     expect(() => parseV3ReadRoute(["paperdesk", "jobs", "x", "submit"], new URLSearchParams())).toThrow();
     expect(() => parseV3ReadRoute(["paperdesk", "shares"], new URLSearchParams())).toThrow();
   });
@@ -55,5 +54,13 @@ describe("V3 dashboard BFF contracts", () => {
     expect(profile.firebaseUid).toBe("firebase-1");
     expect(ProfileOnboardRequestSchema.parse({ role: "student" }).role).toBe("student");
     expect(() => ProfileOnboardRequestSchema.parse({ role: "teacher", firebaseUid: "forged" })).toThrow();
+  });
+
+  it("projects supported upstream responses and drops unapproved fields", () => {
+    expect(projectV3Response("/v3/shared/mode", {
+      audience: true, focused: false, teachers: ["Meera"], n_tests: 1, secret: "do-not-return",
+    })).toEqual({ audience: true, focused: false, teachers: ["Meera"], n_tests: 1 });
+    expect(() => projectV3Response("/v3/shared/mode", { focused: false })).toThrow();
+    expect(projectV3Response("/v3/analysis/overall", { available: false, message: "Take a test", secret: "drop" })).toEqual({ available: false, message: "Take a test" });
   });
 });
