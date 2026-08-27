@@ -1,0 +1,13 @@
+.git
+.git/**
+**/node_modules
+**/.next
+**/.turbo
+**/.local
+**/.env*
+**/coverage
+**/*.log
+content-live
+content-incoming
+archive
+web_public
