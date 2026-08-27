@@ -34,7 +34,8 @@ export function firebaseBearer(request: Request): string {
 
 export function projectAssignment(assignment: ClassroomAssignment) {
   const internal = ClassroomAssignmentSchema.parse(assignment);
-  const { recipientSnapshot, ...redacted } = internal;
+  const { recipientSnapshot, runnerPath: _runnerPath, ...redacted } = internal;
+  void _runnerPath;
   return ClassroomAssignmentProjectionSchema.parse({ ...redacted, recipientCount: recipientSnapshot.length });
 }
 

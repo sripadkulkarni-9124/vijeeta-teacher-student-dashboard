@@ -215,11 +215,11 @@ const AssignmentProjectionBase = {
   updatedAt: IsoTimestampSchema,
 };
 export const ClassroomAssignmentProjectionSchema = z.discriminatedUnion("state", [
-  z.object({ ...AssignmentProjectionBase, state: z.literal("creating"), testId: z.null(), shareId: z.null(), runnerPath: z.null(), reconciliation: z.null() }).strict(),
-  z.object({ ...AssignmentProjectionBase, state: z.literal("active"), testId: IdentifierSchema, shareId: IdentifierSchema, runnerPath: z.string().startsWith("/").max(512), reconciliation: z.null() }).strict(),
-  z.object({ ...AssignmentProjectionBase, state: z.literal("failed"), testId: z.null(), shareId: z.null(), runnerPath: z.null(), reconciliation: z.null(), failureCode: z.string().min(1).max(64) }).strict(),
-  z.object({ ...AssignmentProjectionBase, state: z.literal("reconciliation_required"), testId: z.null(), shareId: z.null(), runnerPath: z.null(), reconciliation: AssignmentReconciliationSchema }).strict(),
-  z.object({ ...AssignmentProjectionBase, state: z.literal("archived"), testId: IdentifierSchema.nullable(), shareId: IdentifierSchema.nullable(), runnerPath: z.null(), reconciliation: z.null() }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("creating"), testId: z.null(), shareId: z.null(), reconciliation: z.null() }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("active"), testId: IdentifierSchema, shareId: IdentifierSchema, reconciliation: z.null() }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("failed"), testId: z.null(), shareId: z.null(), reconciliation: z.null(), failureCode: z.string().min(1).max(64) }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("reconciliation_required"), testId: z.null(), shareId: z.null(), reconciliation: AssignmentReconciliationSchema }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("archived"), testId: IdentifierSchema.nullable(), shareId: IdentifierSchema.nullable(), reconciliation: z.null() }).strict(),
 ]).superRefine((assignment, context) => {
   if (assignment.solutions === "after_close" && assignment.closeAt === null) {
     context.addIssue({ code: "custom", message: "after_close solutions require a close time", path: ["closeAt"] });

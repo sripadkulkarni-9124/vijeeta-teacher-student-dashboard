@@ -208,14 +208,18 @@ describe("connected dashboard contracts", () => {
       state: "active", testId: "test-1", shareId: "share-1", runnerPath: "/t/abcdefghijklmnop",
       reconciliation: null, createdAt: timestamp, updatedAt: timestamp,
     };
-    const { recipientSnapshot, ...internalWithoutRecipients } = assignment;
+    const { recipientSnapshot, runnerPath: _privateRunnerPath, ...internalWithoutRecipients } = assignment;
+    expect(_privateRunnerPath).toBe("/t/abcdefghijklmnop");
     const publicAssignment = { ...internalWithoutRecipients, recipientCount: recipientSnapshot.length };
     const projected = ClassroomAssignmentResponseSchema.parse({ assignment: publicAssignment });
     expect(projected.assignment).toMatchObject({ id: "assignment-1", recipientCount: 1 });
     expect(projected.assignment).not.toHaveProperty("recipientSnapshot");
+    expect(projected.assignment).not.toHaveProperty("runnerPath");
     expect(JSON.stringify(projected)).not.toContain("student@example.com");
+    expect(JSON.stringify(projected)).not.toContain("/t/abcdefghijklmnop");
     expect(ClassroomAssignmentProjectionSchema.parse(publicAssignment)).toEqual(publicAssignment);
     expect(() => ClassroomAssignmentProjectionSchema.parse(assignment)).toThrow();
+    expect(() => ClassroomAssignmentProjectionSchema.parse({ ...publicAssignment, runnerPath: "/t/abcdefghijklmnop" })).toThrow();
     expect(() => ClassroomAssignmentSchema.parse(publicAssignment)).toThrow();
     expect(ClassroomAssignmentSchema.parse(assignment).recipientSnapshot).toHaveLength(1);
   });

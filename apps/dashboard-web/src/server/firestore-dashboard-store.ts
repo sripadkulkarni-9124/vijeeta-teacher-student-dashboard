@@ -65,6 +65,16 @@ const MAX_PAGE_SIZE = 100;
 // Assignment + idempotency key + audit mirror consume three writes in the same atomic transaction.
 const MAX_ASSIGNMENT_RECIPIENTS = 497;
 
+export const STUDENT_ASSIGNMENT_QUERY_INDEX = {
+  collectionGroup: "assignments",
+  queryScope: "COLLECTION",
+  fields: [
+    { fieldPath: "classroomId", order: "ASCENDING" },
+    { fieldPath: "createdAt", order: "DESCENDING" },
+    { fieldPath: "__name__", order: "DESCENDING" },
+  ],
+} as const;
+
 export interface FirestoreDashboardDocumentSnapshot {
   id: string;
   exists: boolean;
@@ -1148,9 +1158,11 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
         && membershipFromClassroom(member, classroomId).status === "active";
       if (!student) throw new DashboardStoreError("Assignment is outside the verified principal scope", "assignment_forbidden");
       const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "studentClassroomAssignments");
+      const [classroomFilter, createdAtOrder, documentOrder] = STUDENT_ASSIGNMENT_QUERY_INDEX.fields;
       let query = this.studentAssignmentCollection(principal.uid)
-        .where("classroomId", "==", classroomId)
-        .orderBy("createdAt", "desc").orderBy("__name__", "desc");
+        .where(classroomFilter.fieldPath, "==", classroomId)
+        .orderBy(createdAtOrder.fieldPath, indexOrder(createdAtOrder.order))
+        .orderBy(documentOrder.fieldPath, indexOrder(documentOrder.order));
       if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
       const projectionSnapshot = await query.limit(page.limit + 1).get();
       const projections = projectionSnapshot.docs.slice(0, page.limit)
@@ -2033,4 +2045,8 @@ function isSafeDocumentId(value: string): boolean {
     const point = character.codePointAt(0) ?? 0;
     return point <= 31 || point === 127;
   });
+}
+
+function indexOrder(order: "ASCENDING" | "DESCENDING"): "asc" | "desc" {
+  return order === "ASCENDING" ? "asc" : "desc";
 }

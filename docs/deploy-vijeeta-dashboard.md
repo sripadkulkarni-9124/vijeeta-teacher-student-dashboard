@@ -92,6 +92,8 @@ Migrations must be versioned, idempotent, forward-only, and run by an explicitly
 
 Indexes must be declared and reviewed before the first production read. Create only indexes used by approved V3 queries, wait for build completion, and record the index definition and database resource. Index deletion is a separate approval. Do not rely on automatic index prompts from an unreviewed production request.
 
+The reviewed named-database manifest is `firestore.indexes.dashboard.json`. Its collection-scoped `assignments` index (`classroomId ASC`, `createdAt DESC`, document name `DESC`) exactly supports Student pagination under `studentAssignments/{uid}/assignments`; it is not a collection-group read and must be applied explicitly to database `vijeeta-dashboard`, never the default database. Checking in this definition does not authorize or perform index creation.
+
 Before enabling writes, obtain an approved backup/export and retention policy for the named database, including encryption, access, restore test, and cost owner. Restore rehearsal must target an isolated database/project. Rollback of the application image is independent from data rollback; a bad migration is handled by a reviewed forward fix or approved restore, never by pointing the service at the legacy/default database.
 
 ## Environment contract

@@ -51,8 +51,9 @@ describe("assignment API orchestration", () => {
     const handlers = createClassroomAssignmentsRouteHandlers({ verifier: { verify: vi.fn(async () => principal) }, profiles: profileReader(teacherProfile), assignments, assignmentAdapter: { share }, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
     const response = await handlers.POST(request("POST", "http://localhost/api/classes/class-1/assignments", { jobId: "job-1", openAt: OPEN, closeAt: CLOSE, solutions: "after_close" }), { params: Promise.resolve({ id: "class-1" }) });
     expect(response.status).toBe(201);
-    const { recipientSnapshot: _privateRecipients, ...safeAssignment } = active;
+    const { recipientSnapshot: _privateRecipients, runnerPath: _privateRunnerPath, ...safeAssignment } = active;
     expect(_privateRecipients).toHaveLength(1);
+    expect(_privateRunnerPath).toBe("/t/abcdefghijklmnop");
     expect(await response.json()).toEqual({ assignment: { ...safeAssignment, recipientCount: 1 } });
     expect(share).toHaveBeenCalledOnce();
     expect(share).toHaveBeenCalledWith({ jobId: "job-1", recipientEmails: ["student@example.test"], openAt: OPEN, closeAt: CLOSE, solutions: "after_close" }, "abcdefghijklmnopqrst");
@@ -122,6 +123,8 @@ describe("assignment API orchestration", () => {
     expect(body.assignments[0]).toMatchObject({ id: "assignment-1", recipientCount: 1 });
     expect(JSON.stringify(body)).not.toContain("student@example.test");
     expect(JSON.stringify(body)).not.toContain("student-uid");
+    expect(JSON.stringify(body)).not.toContain("runnerPath");
+    expect(JSON.stringify(body)).not.toContain("/t/abcdefghijklmnop");
   });
 
   it("maps an ambiguous V3 outcome to reconciliation and a definite rejection to failed", async () => {

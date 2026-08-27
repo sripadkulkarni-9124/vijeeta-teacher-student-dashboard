@@ -8,6 +8,7 @@ import type { AuditEmissionStatus, AuditEmissionStatusReporter, AuditEmitter } f
 import type { MutationContext } from "./dashboard-store";
 import {
   FirestoreDashboardStore,
+  STUDENT_ASSIGNMENT_QUERY_INDEX,
   type FirestoreCollectionReference,
   type FirestoreDashboardDocumentReference,
   type FirestoreDashboardDocumentSnapshot,
@@ -16,6 +17,8 @@ import {
   type FirestoreQuery,
   type FirestoreQuerySnapshot,
 } from "./firestore-dashboard-store";
+
+import dashboardIndexes from "../../../../firestore.indexes.dashboard.json";
 
 type StoredDocument = Record<string, unknown>;
 type Write =
@@ -211,6 +214,21 @@ const BOOTSTRAP_BY_UID: AdminBootstrapConfig = {
   verifiedEmails: [],
   firebaseUids: ["admin-uid"],
 };
+
+describe("named dashboard Firestore index contract", () => {
+  it("checks in the exact collection-scoped Student assignment pagination index", () => {
+    expect(dashboardIndexes.indexes).toContainEqual(STUDENT_ASSIGNMENT_QUERY_INDEX);
+    expect(STUDENT_ASSIGNMENT_QUERY_INDEX).toEqual({
+      collectionGroup: "assignments",
+      queryScope: "COLLECTION",
+      fields: [
+        { fieldPath: "classroomId", order: "ASCENDING" },
+        { fieldPath: "createdAt", order: "DESCENDING" },
+        { fieldPath: "__name__", order: "DESCENDING" },
+      ],
+    });
+  });
+});
 
 const adminPrincipal = principal("admin-uid", "admin@example.com", true);
 const teacherPrincipal = principal("teacher-uid", "teacher@example.com", true);
