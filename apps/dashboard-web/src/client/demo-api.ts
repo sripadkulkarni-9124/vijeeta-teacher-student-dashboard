@@ -1,17 +1,19 @@
 import type {
   DashboardAction,
+  DashboardDispatchResult,
   DashboardRole,
   DashboardSnapshot,
 } from "@vijeeta/api-contracts";
 import {
   DashboardProblemSchema,
   parseDashboardAction,
+  parseDashboardDispatchResult,
   parseDashboardSnapshot,
 } from "@vijeeta/api-contracts";
 
 export interface DemoApi {
   snapshot(role: DashboardRole): Promise<DashboardSnapshot>;
-  mutate(action: DashboardAction): Promise<unknown>;
+  mutate(action: DashboardAction): Promise<DashboardDispatchResult>;
 }
 
 export function createDemoApi(transport: typeof fetch = fetch): DemoApi {
@@ -33,7 +35,7 @@ export function createDemoApi(transport: typeof fetch = fetch): DemoApi {
       });
       const payload: unknown = await response.json();
       if (!response.ok) throw toApiError(payload, response.status);
-      return payload;
+      return parseDashboardDispatchResult(payload);
     },
   };
 }

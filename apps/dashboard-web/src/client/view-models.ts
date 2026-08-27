@@ -102,14 +102,14 @@ export function toStudentView(_snapshot: ApiStudentSnapshot): StudentDashboardSn
         ? "in-progress"
         : waitingStatus;
     if (!result && attempt?.status !== "in-progress") waitingIndex += 1;
+    const classRecipient = assignment.recipients.find(
+      (recipient) => recipient.kind === "class",
+    );
 
     return {
       id: assignment.id,
       title: assignment.title,
-      classId:
-        assignment.recipients.find((recipient) => recipient.kind === "class")?.kind === "class"
-          ? assignment.recipients.find((recipient) => recipient.kind === "class")?.id
-          : undefined,
+      classId: classRecipient?.kind === "class" ? classRecipient.id : undefined,
       subject: snapshot.classes[0]?.subject,
       status,
       dueAt: status === "pending" ? "Friday, 2:00 PM" : "Today, 6:00 PM",
@@ -118,6 +118,14 @@ export function toStudentView(_snapshot: ApiStudentSnapshot): StudentDashboardSn
       score: result?.score,
       totalMarks: result?.totalMarks,
       resultSummary: result ? "Attempt recorded in your local learning history." : undefined,
+      questions: attempt?.questions?.map((question) => ({
+        id: question.id,
+        prompt: question.prompt,
+        choices: question.choices.map((choice) => ({
+          id: choice.id,
+          label: choice.label,
+        })),
+      })),
     };
   });
   const scoredMarks = snapshot.results.reduce((total, result) => total + result.score, 0);
@@ -138,7 +146,9 @@ export function toStudentView(_snapshot: ApiStudentSnapshot): StudentDashboardSn
     })),
     tests,
     selectedTestId:
-      tests.find((test) => test.status === "assigned")?.id ?? tests[0]?.id,
+      tests.find((test) => test.status === "in-progress")?.id ??
+      tests.find((test) => test.status === "assigned")?.id ??
+      tests[0]?.id,
     insights: {
       testsCompleted: snapshot.insights.personal.attempted,
       averageScore: totalMarks > 0 ? `${Math.round((scoredMarks / totalMarks) * 100)}%` : "—",

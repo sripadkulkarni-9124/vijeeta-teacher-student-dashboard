@@ -23,6 +23,16 @@ describe("/api/demo", () => {
     expect((await response.json()).problem.code).toBe("invalid_request");
   });
 
+  it("reports local store failures as typed 500 responses", async () => {
+    const directoryPath = await mkdtemp(join(tmpdir(), "vijeeta-route-error-"));
+    createDemoServiceForTests(new DashboardService(new DashboardStore({ filePath: directoryPath })));
+
+    const response = await GET(new Request("http://localhost/api/demo?role=student"));
+
+    expect(response.status).toBe(500);
+    expect((await response.json()).problem.code).toBe("internal_error");
+  });
+
   it("serves a role snapshot and dispatches one typed action union", async () => {
     const statePath = join(await mkdtemp(join(tmpdir(), "vijeeta-route-")), "state.json");
     createDemoServiceForTests(new DashboardService(new DashboardStore({ filePath: statePath })));

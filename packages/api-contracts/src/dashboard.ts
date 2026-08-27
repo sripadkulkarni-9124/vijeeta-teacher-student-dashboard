@@ -255,8 +255,37 @@ export function parseDashboardSnapshot(input: unknown): DashboardSnapshot {
   return DashboardSnapshotSchema.parse(input);
 }
 
+export const DashboardDispatchResultSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("quick-test-created"),
+    draft: QuickTestDraftSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("assignment-created"),
+    assignment: DashboardAssignmentSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("student-invited"),
+    invite: DashboardInviteSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("attempt-started"),
+    attempt: StudentAttemptSchema,
+  }).strict(),
+  z.object({
+    type: z.literal("attempt-submitted"),
+    attempt: StudentAttemptSchema,
+    result: AttemptResultSchema,
+  }).strict(),
+]);
+export type DashboardDispatchResult = z.infer<typeof DashboardDispatchResultSchema>;
+
+export function parseDashboardDispatchResult(input: unknown): DashboardDispatchResult {
+  return DashboardDispatchResultSchema.parse(input);
+}
+
 export const DashboardProblemSchema = z.object({
-  code: z.literal("invalid_request"),
+  code: z.enum(["invalid_request", "internal_error"]),
   message: z.string().min(1),
   issues: z.array(z.object({ path: z.array(z.union([z.string(), z.number()])), message: z.string() }).strict()).optional(),
 }).strict();

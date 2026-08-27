@@ -24,6 +24,22 @@ export interface StudentTestResult {
   summary?: string;
 }
 
+export interface StudentTestChoice {
+  id: string;
+  label: string;
+}
+
+export interface StudentTestQuestion {
+  id: string;
+  prompt: string;
+  choices: readonly StudentTestChoice[];
+}
+
+export interface StudentAttemptResponse {
+  questionId: string;
+  selectedChoiceId: string;
+}
+
 export interface StudentTest {
   id: string;
   title: string;
@@ -37,6 +53,7 @@ export interface StudentTest {
   totalMarks?: number;
   resultSummary?: string;
   result?: StudentTestResult;
+  questions?: readonly StudentTestQuestion[];
 }
 
 export interface StudentInsights {
@@ -57,11 +74,15 @@ export interface StudentDashboardSnapshot {
 export interface StudentDashboardProps {
   snapshot: StudentDashboardSnapshot;
   onStartAttempt: (testId: string) => Promise<void>;
-  onSubmitAttempt: (testId: string) => Promise<void>;
+  onSubmitAttempt: (
+    testId: string,
+    responses: readonly StudentAttemptResponse[],
+  ) => Promise<void>;
 }
 
 type LocalTestStatuses = Readonly<Record<string, StudentTestStatus>>;
 type BusyAction = { kind: "start" | "submit"; testId: string } | null;
+type SelectedChoices = Readonly<Record<string, Readonly<Record<string, string>>>>;
 type Element = ReturnType<typeof createElement>;
 
 const groupDefinitions: readonly {
@@ -91,11 +112,13 @@ export function StudentDashboard({
   );
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [actionError, setActionError] = useState<string>();
+  const [selectedChoices, setSelectedChoices] = useState<SelectedChoices>({});
 
   useEffect(() => {
     setLocalStatuses(toStatusMap(snapshot.tests));
     setSelectedTestId(snapshot.selectedTestId ?? snapshot.tests[0]?.id);
     setActionError(undefined);
+    setSelectedChoices({});
   }, [snapshot]);
 
   const tests = useMemo(
@@ -185,10 +208,32 @@ export function StudentDashboard({
             }
           },
           onSubmit: async () => {
+            const questions = selectedTest.questions ?? [];
+            if (questions.length === 0) {
+              setActionError("Questions are still loading. Try starting the attempt again.");
+              return;
+            }
+            const choicesForTest = selectedChoices[selectedTest.id] ?? {};
+            const responses = questions.flatMap((question) => {
+              const selectedChoiceId = choicesForTest[question.id];
+              const isValidChoice = question.choices.some(
+                (choice) => choice.id === selectedChoiceId,
+              );
+              return selectedChoiceId && isValidChoice
+                ? [{ questionId: question.id, selectedChoiceId }]
+                : [];
+            });
+            const missingCount = questions.length - responses.length;
+            if (missingCount > 0) {
+              setActionError(
+                `Answer every question before submitting. ${missingCount} ${missingCount === 1 ? "answer is" : "answers are"} missing.`,
+              );
+              return;
+            }
             setBusyAction({ kind: "submit", testId: selectedTest.id });
             setActionError(undefined);
             try {
-              await onSubmitAttempt(selectedTest.id);
+              await onSubmitAttempt(selectedTest.id, responses);
               setLocalStatuses((current) => ({ ...current, [selectedTest.id]: "submitted" }));
             } catch {
               setActionError("We could not submit this attempt. Try again.");
@@ -196,6 +241,17 @@ export function StudentDashboard({
               setBusyAction(null);
             }
           },
+          onSelectChoice: (questionId: string, choiceId: string) => {
+            setSelectedChoices((current) => ({
+              ...current,
+              [selectedTest.id]: {
+                ...current[selectedTest.id],
+                [questionId]: choiceId,
+              },
+            }));
+            setActionError(undefined);
+          },
+          selectedChoices: selectedChoices[selectedTest.id] ?? {},
           test: selectedTest,
         })
       : null,
@@ -291,12 +347,16 @@ function TestDetail({
   busyAction,
   onStart,
   onSubmit,
+  onSelectChoice,
+  selectedChoices,
   test,
 }: {
   actionError?: string;
   busyAction: BusyAction;
   onStart: () => Promise<void>;
   onSubmit: () => Promise<void>;
+  onSelectChoice: (questionId: string, choiceId: string) => void;
+  selectedChoices: Readonly<Record<string, string>>;
   test: StudentTest;
 }): Element {
   const result = resolveResult(test);
@@ -347,6 +407,39 @@ function TestDetail({
     );
   }
   if (test.status === "in-progress") {
+    if (test.questions && test.questions.length > 0) {
+      detail.push(
+        createElement(
+          "div",
+          { className: "student-question-list", key: "questions" },
+          test.questions.map((question, index) =>
+            createElement(
+              "fieldset",
+              { className: "student-question", key: question.id },
+              createElement(
+                "legend",
+                null,
+                `Question ${index + 1}: ${question.prompt}`,
+              ),
+              question.choices.map((choice) =>
+                createElement(
+                  "label",
+                  { className: "student-question__choice", key: choice.id },
+                  createElement("input", {
+                    checked: selectedChoices[question.id] === choice.id,
+                    name: `answer-${test.id}-${question.id}`,
+                    onChange: () => onSelectChoice(question.id, choice.id),
+                    type: "radio",
+                    value: choice.id,
+                  }),
+                  createElement("span", null, choice.label),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
     detail.push(
       createElement(
         "button",

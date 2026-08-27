@@ -1,15 +1,28 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import {
+  AttemptResultSchema,
+  DashboardAssignmentSchema,
+  DashboardClassSchema,
+  DashboardInviteSchema,
+  DashboardOrganisationSchema,
+  DashboardQuestionSchema,
+  QuickTestDraftSchema,
+  ReleasePolicySchema,
+  StudentAttemptSchema,
+  StudentDashboardSessionSchema,
+  TeacherDashboardSessionSchema,
   type AttemptResponse,
   type AssignmentRecipient,
   type DashboardAction,
   type DashboardAssignment,
   type DashboardClass,
+  type DashboardDispatchResult,
   type DashboardQuestion,
   type DashboardSnapshot,
   type DashboardInvite,
   type QuickTestDraft,
+  type ReleasePolicy,
   type StudentAttempt,
   type AttemptResult,
   type TeacherDashboardSnapshot,
@@ -39,10 +52,26 @@ export class CaptureMessagingAdapter implements MessagingAdapter {
 
 export class CaptureTestEngineAdapter implements TestEngineAdapter {
   readonly requests: Array<{ topic: string; questionCount: number; difficulty: string }> = [];
+  readonly answerKeys: Record<string, string> = {};
 
   async generateQuestions(input: { topic: string; questionCount: number; difficulty: string }): Promise<DashboardQuestion[]> {
     this.requests.push({ ...input });
-    return [];
+    const topicSlug = slug(input.topic);
+    return Array.from({ length: input.questionCount }, (_, index) => {
+      const sequence = index + 1;
+      const questionId = `question-${topicSlug}-${sequence}`;
+      const choices = ["a", "b", "c", "d"].map((suffix) => ({
+        id: `choice-${topicSlug}-${sequence}-${suffix}`,
+        label: `Option ${suffix.toUpperCase()}`,
+      }));
+      this.answerKeys[questionId] = choices[index % choices.length].id;
+      return {
+        id: questionId,
+        prompt: `${input.topic}: ${input.difficulty} practice question ${sequence}`,
+        choices,
+        marks: 4,
+      };
+    });
   }
 }
 
@@ -51,6 +80,7 @@ interface InternalTest {
   title: string;
   questions: DashboardQuestion[];
   answerKeys: Record<string, string>;
+  releasePolicy: ReleasePolicy;
 }
 
 export interface DashboardState {
@@ -68,13 +98,6 @@ export interface DashboardState {
   attempts: StudentAttempt[];
   results: AttemptResult[];
 }
-
-export type DashboardDispatchResult =
-  | { type: "quick-test-created"; draft: QuickTestDraft }
-  | { type: "assignment-created"; assignment: DashboardAssignment }
-  | { type: "student-invited"; invite: DashboardInvite }
-  | { type: "attempt-started"; attempt: StudentAttempt }
-  | { type: "attempt-submitted"; attempt: StudentAttempt; result: AttemptResult };
 
 export interface DashboardStoreOptions {
   filePath?: string;
@@ -148,6 +171,7 @@ function initialState(): DashboardState {
       title: DEMO_TEST.title,
       questions,
       answerKeys: { "question-kinematics-01": "choice-a", "question-units-01": "choice-b" },
+      releasePolicy: "after-test",
     }],
     assignments: [assignment, ...upcomingAssignments],
     attempts: [{
@@ -208,8 +232,12 @@ export class DashboardStore {
       recipients: assignment.recipients.map((recipient) => toRecipientStatus(recipient, state, assignment.id)),
     }));
     if (role === "teacher") {
-      const attempted = state.attempts.filter((attempt) => attempt.status === "submitted").length;
-      const pending = Math.max(0, (state.classes[0]?.roster.length ?? 0) - attempted);
+      const eligibleStudentIds = new Set(state.classes.flatMap((entry) => entry.roster.map((student) => student.id)));
+      const submittedStudentIds = new Set(state.attempts
+        .filter((attempt) => attempt.status === "submitted" && eligibleStudentIds.has(attempt.studentId))
+        .map((attempt) => attempt.studentId));
+      const attempted = submittedStudentIds.size;
+      const pending = Math.max(0, eligibleStudentIds.size - attempted);
       return {
         role,
         session: state.sessions.teacher,
@@ -228,7 +256,10 @@ export class DashboardStore {
       };
     }
     const studentAttempts = state.attempts.filter((attempt) => attempt.studentId === STUDENT_ID);
-    const studentResults = state.results.filter((result) => studentAttempts.some((attempt) => attempt.id === result.attemptId));
+    const studentResults = state.results
+      .filter((result) => studentAttempts.some((attempt) => attempt.id === result.attemptId))
+      .filter((result) => isResultReleased(state, result, this.now()))
+      .map((result) => ({ ...result, released: true }));
     return {
       role,
       session: state.sessions.student,
@@ -254,16 +285,37 @@ export class DashboardStore {
       case "create-quick-test": {
         const id = `draft-${slug(action.topic)}-${state.quickTests.filter((draft) => draft.topic.toLowerCase() === action.topic.toLowerCase()).length + 1}`;
         const questions = await this.testEngine.generateQuestions({ topic: action.topic, questionCount: action.questionCount, difficulty: action.difficulty });
-        const draft: QuickTestDraft = { ...action, id, status: "draft", createdAt: this.now(), questions: questions.length ? questions : undefined };
+        const draft: QuickTestDraft = {
+          id,
+          topic: action.topic,
+          questionCount: action.questionCount,
+          difficulty: action.difficulty,
+          durationMinutes: action.durationMinutes,
+          negativeMarking: action.negativeMarking,
+          releasePolicy: action.releasePolicy,
+          status: "draft",
+          createdAt: this.now(),
+          questions: questions.length ? questions : undefined,
+        };
         state.quickTests.push(draft);
-        state.tests.push({ id, title: `${action.topic} quick test`, questions, answerKeys: {} });
+        const answerKeys = Object.fromEntries(questions.map((question) => [
+          question.id,
+          this.testEngine instanceof CaptureTestEngineAdapter
+            ? this.testEngine.answerKeys[question.id]
+            : question.choices[0]?.id,
+        ]).filter((entry): entry is [string, string] => typeof entry[1] === "string"));
+        state.tests.push({ id, title: `${action.topic} quick test`, questions, answerKeys, releasePolicy: action.releasePolicy });
         await this.save(state);
         return { type: "quick-test-created", draft };
       }
       case "create-assignment": {
-        if (!state.tests.some((test) => test.id === action.testId) && !state.quickTests.some((draft) => draft.id === action.testId)) {
+        const test = state.tests.find((entry) => entry.id === action.testId);
+        if (!test) {
           throw new DashboardStoreError("Test not found", "not_found");
         }
+        const unknownClassId = action.classIds.find((id) => !state.classes.some((entry) => entry.id === id));
+        if (unknownClassId) throw new DashboardStoreError("Class not found", "not_found");
+        if (test.questions.length === 0) throw new DashboardStoreError("Test has no questions", "conflict");
         const recipients: AssignmentRecipient[] = [
           ...action.classIds.map((id) => ({ kind: "class" as const, id, label: state.classes.find((entry) => entry.id === id)?.name ?? id, status: "pending" as const })),
           ...action.directEmails.map((email) => ({ kind: "email" as const, email, status: "pending" as const })),
@@ -285,7 +337,11 @@ export class DashboardStore {
         const assignment = state.assignments.find((entry) => entry.id === action.assignmentId);
         if (!assignment) throw new DashboardStoreError("Assignment not found", "not_found");
         const test = state.tests.find((entry) => entry.id === assignment.testId);
-        const attempt: StudentAttempt = { id: `attempt-${STUDENT_ID}-${state.attempts.length + 1}`, assignmentId: assignment.id, studentId: STUDENT_ID, status: "in-progress", startedAt: this.now(), submittedAt: null, responses: [], questions: test?.questions };
+        if (!test) throw new DashboardStoreError("Test not found", "not_found");
+        if (test.questions.length === 0) throw new DashboardStoreError("Test has no questions", "conflict");
+        const existingAttempt = state.attempts.find((entry) => entry.assignmentId === assignment.id && entry.studentId === STUDENT_ID);
+        if (existingAttempt) throw new DashboardStoreError("Assignment already attempted", "conflict");
+        const attempt: StudentAttempt = { id: `attempt-${STUDENT_ID}-${state.attempts.length + 1}`, assignmentId: assignment.id, studentId: STUDENT_ID, status: "in-progress", startedAt: this.now(), submittedAt: null, responses: [], questions: test.questions };
         state.attempts.push(attempt);
         await this.save(state);
         return { type: "attempt-started", attempt };
@@ -293,20 +349,34 @@ export class DashboardStore {
       case "submit-attempt": {
         const attempt = state.attempts.find((entry) => entry.id === action.attemptId);
         if (!attempt) throw new DashboardStoreError("Attempt not found", "not_found");
+        if (attempt.status === "submitted") throw new DashboardStoreError("Attempt already submitted", "conflict");
         const assignment = state.assignments.find((entry) => entry.id === attempt.assignmentId);
         const test = state.tests.find((entry) => entry.id === assignment?.testId);
         if (!assignment || !test) throw new DashboardStoreError("Test not found", "not_found");
         const responses: AttemptResponse[] = action.responses;
+        const attemptQuestions = attempt.questions ?? test.questions;
+        const uniqueQuestionIds = new Set(responses.map((response) => response.questionId));
+        if (uniqueQuestionIds.size !== responses.length) throw new DashboardStoreError("Duplicate question response", "conflict");
+        if (uniqueQuestionIds.size !== attemptQuestions.length) {
+          throw new DashboardStoreError("Every question requires one response", "conflict");
+        }
+        for (const response of responses) {
+          const question = attemptQuestions.find((entry) => entry.id === response.questionId);
+          if (!question) throw new DashboardStoreError("Question not found in attempt", "conflict");
+          if (!question.choices.some((choice) => choice.id === response.selectedChoiceId)) {
+            throw new DashboardStoreError("Choice not found in question", "conflict");
+          }
+        }
         attempt.responses = responses;
         attempt.status = "submitted";
         attempt.submittedAt = this.now();
         const questionResults = responses.map((response) => {
-          const question = test.questions.find((entry) => entry.id === response.questionId);
+          const question = attemptQuestions.find((entry) => entry.id === response.questionId);
           const marksAwarded = question && test.answerKeys[response.questionId] === response.selectedChoiceId ? question.marks : 0;
           return { questionId: response.questionId, selectedChoiceId: response.selectedChoiceId, marksAwarded };
         });
-        const totalMarks = test.questions.reduce((sum, question) => sum + question.marks, 0) || 1;
-        const result: AttemptResult = { attemptId: attempt.id, assignmentId: assignment.id, score: questionResults.reduce((sum, question) => sum + question.marksAwarded, 0), totalMarks, released: true, questionResults };
+        const totalMarks = attemptQuestions.reduce((sum, question) => sum + question.marks, 0) || 1;
+        const result: AttemptResult = { attemptId: attempt.id, assignmentId: assignment.id, score: questionResults.reduce((sum, question) => sum + question.marksAwarded, 0), totalMarks, released: isReleasePolicyReleased(test.releasePolicy, this.now()), questionResults };
         state.results.push(result);
         await this.save(state);
         return { type: "attempt-submitted", attempt, result };
@@ -322,17 +392,25 @@ export class DashboardStore {
   }
 
   private async load(): Promise<DashboardState> {
+    let content: string;
     try {
-      const content = await readFile(this.filePath, "utf8");
-      const state = JSON.parse(content) as DashboardState;
-      const upgraded = upgradeState(state);
-      if (upgraded) await this.save(state);
-      return state;
+      content = await readFile(this.filePath, "utf8");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       const state = initialState();
       await this.save(state);
       return state;
+    }
+    try {
+      const state = parseDashboardState(JSON.parse(content));
+      const upgraded = upgradeState(state);
+      if (upgraded) await this.save(state);
+      return state;
+    } catch (error) {
+      throw new Error(
+        `The local dashboard state is corrupt or incompatible. Remove the local state file to reset the demo: ${this.filePath}`,
+        { cause: error },
+      );
     }
   }
 
@@ -344,6 +422,66 @@ export class DashboardStore {
   }
 }
 
+function parseDashboardState(input: unknown): DashboardState {
+  const state = asRecord(input, "dashboard state");
+  if (state.version !== 1) throw new Error("Unsupported dashboard state version");
+  const sessions = asRecord(state.sessions, "sessions");
+  return {
+    version: 1,
+    organisation: DashboardOrganisationSchema.parse(state.organisation),
+    sessions: {
+      teacher: TeacherDashboardSessionSchema.parse(sessions.teacher),
+      student: StudentDashboardSessionSchema.parse(sessions.student),
+    },
+    classes: parseArray(state.classes, (value) => DashboardClassSchema.parse(value)),
+    invites: parseArray(state.invites, (value) => DashboardInviteSchema.parse(value)),
+    quickTests: parseArray(state.quickTests, parseQuickTestDraft),
+    tests: parseArray(state.tests, parseInternalTest),
+    assignments: parseArray(state.assignments, (value) => DashboardAssignmentSchema.parse(value)),
+    attempts: parseArray(state.attempts, (value) => StudentAttemptSchema.parse(value)),
+    results: parseArray(state.results, (value) => AttemptResultSchema.parse(value)),
+  };
+}
+
+function parseQuickTestDraft(input: unknown): QuickTestDraft {
+  const draft = asRecord(input, "quick test draft");
+  const persistedDraft = { ...draft };
+  delete persistedDraft.type;
+  return QuickTestDraftSchema.parse(persistedDraft);
+}
+
+function parseInternalTest(input: unknown): InternalTest {
+  const test = asRecord(input, "test");
+  const answerKeys = asRecord(test.answerKeys, "answer keys");
+  if (typeof test.id !== "string" || !test.id || typeof test.title !== "string" || !test.title) {
+    throw new Error("Invalid local test identity");
+  }
+  if (!Object.values(answerKeys).every((value) => typeof value === "string" && value.length > 0)) {
+    throw new Error("Invalid local test answer keys");
+  }
+  return {
+    id: test.id,
+    title: test.title,
+    questions: parseArray(test.questions, (value) => DashboardQuestionSchema.parse(value)),
+    answerKeys: answerKeys as Record<string, string>,
+    releasePolicy: test.releasePolicy === undefined
+      ? "after-test"
+      : ReleasePolicySchema.parse(test.releasePolicy),
+  };
+}
+
+function parseArray<T>(input: unknown, parse: (value: unknown) => T): T[] {
+  if (!Array.isArray(input)) throw new Error("Expected an array in local dashboard state");
+  return input.map(parse);
+}
+
+function asRecord(input: unknown, label: string): Record<string, unknown> {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new Error(`Invalid ${label}`);
+  }
+  return input as Record<string, unknown>;
+}
+
 function upgradeState(state: DashboardState): boolean {
   const defaults = initialState();
   let changed = false;
@@ -352,7 +490,24 @@ function upgradeState(state: DashboardState): boolean {
     state.assignments.push(assignment);
     changed = true;
   }
+  for (const test of state.tests) {
+    if (test.releasePolicy) continue;
+    test.releasePolicy = state.quickTests.find((draft) => draft.id === test.id)?.releasePolicy ?? "after-test";
+    changed = true;
+  }
   return changed;
+}
+
+function isReleasePolicyReleased(policy: ReleasePolicy, now: string): boolean {
+  if (typeof policy === "string") return true;
+  return Date.parse(policy.releaseAt) <= Date.parse(now);
+}
+
+function isResultReleased(state: DashboardState, result: AttemptResult, now: string): boolean {
+  if (result.released) return true;
+  const assignment = state.assignments.find((entry) => entry.id === result.assignmentId);
+  const test = state.tests.find((entry) => entry.id === assignment?.testId);
+  return test ? isReleasePolicyReleased(test.releasePolicy, now) : false;
 }
 
 function averageScore(results: AttemptResult[]): number {

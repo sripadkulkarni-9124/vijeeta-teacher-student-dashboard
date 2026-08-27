@@ -17,6 +17,11 @@ export function DashboardPrototype({ api = demoApi }: { api?: DemoApi }) {
   const attemptIds = useRef(new Map<string, string>());
 
   useEffect(() => {
+    const savedRole = localStorage.getItem("vijeeta-dashboard-role");
+    if (savedRole === "teacher" || savedRole === "student") setRole(savedRole);
+  }, []);
+
+  useEffect(() => {
     if (!role) {
       setSnapshot(null);
       setState("idle");
@@ -45,6 +50,16 @@ export function DashboardPrototype({ api = demoApi }: { api?: DemoApi }) {
     setState("ready");
   }
 
+  function selectRole(nextRole: "teacher" | "student") {
+    localStorage.setItem("vijeeta-dashboard-role", nextRole);
+    setRole(nextRole);
+  }
+
+  function clearRole() {
+    localStorage.removeItem("vijeeta-dashboard-role");
+    setRole(null);
+  }
+
   return (
     <div className="app-frame">
       <a className="skip-link" href="#main-content">
@@ -63,7 +78,7 @@ export function DashboardPrototype({ api = demoApi }: { api?: DemoApi }) {
             <span className="role-pill">
               {role === "teacher" ? "Teacher workspace" : "Student workspace"}
             </span>
-            <Button onClick={() => setRole(null)} variant="secondary">
+            <Button onClick={clearRole} variant="secondary">
               Switch role
             </Button>
           </div>
@@ -138,24 +153,22 @@ export function DashboardPrototype({ api = demoApi }: { api?: DemoApi }) {
                   snapshot={toStudentView(snapshot)}
                   onStartAttempt={async (assignmentId) => {
                     const result = await api.mutate({ type: "start-attempt", assignmentId });
-                    const attemptId = readAttemptId(result);
-                    if (attemptId) attemptIds.current.set(assignmentId, attemptId);
+                    if (result.type !== "attempt-started") {
+                      throw new Error("Local API returned an unexpected attempt result");
+                    }
+                    attemptIds.current.set(assignmentId, result.attempt.id);
                     await refresh("student");
                   }}
-                  onSubmitAttempt={async (assignmentId) => {
+                  onSubmitAttempt={async (assignmentId, responses) => {
                     const current = snapshot.attempts.find(
                       (attempt) => attempt.assignmentId === assignmentId && attempt.status === "in-progress",
                     );
                     const attemptId = attemptIds.current.get(assignmentId) ?? current?.id;
                     if (!attemptId) throw new Error("Start the attempt before submitting");
-                    const questions = current?.questions ?? [];
                     await api.mutate({
                       type: "submit-attempt",
                       attemptId,
-                      responses: questions.map((question) => ({
-                        questionId: question.id,
-                        selectedChoiceId: question.choices[0]?.id ?? "choice-a",
-                      })),
+                      responses: [...responses],
                     });
                     await refresh("student");
                   }}
@@ -164,21 +177,9 @@ export function DashboardPrototype({ api = demoApi }: { api?: DemoApi }) {
             ) : null}
           </section>
         ) : (
-          <RoleLanding onSelectRole={setRole} />
+          <RoleLanding onSelectRole={selectRole} />
         )}
       </main>
     </div>
   );
-}
-
-function readAttemptId(result: unknown): string | undefined {
-  if (
-    typeof result === "object" &&
-    result !== null &&
-    "attempt" in result &&
-    typeof (result as { attempt?: { id?: unknown } }).attempt?.id === "string"
-  ) {
-    return (result as { attempt: { id: string } }).attempt.id;
-  }
-  return undefined;
 }

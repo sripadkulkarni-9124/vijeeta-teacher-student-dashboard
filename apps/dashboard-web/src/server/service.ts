@@ -1,5 +1,5 @@
-import { parseDashboardAction, type DashboardRole, type DashboardSnapshot, type StudentDashboardSnapshot, type TeacherDashboardSnapshot } from "@vijeeta/api-contracts";
-import { DashboardStore, type DashboardDispatchResult } from "./store";
+import { parseDashboardAction, type DashboardDispatchResult, type DashboardRole, type DashboardSnapshot, type StudentDashboardSnapshot, type TeacherDashboardSnapshot } from "@vijeeta/api-contracts";
+import { DashboardStore } from "./store";
 
 export class DashboardService {
   constructor(private readonly store: DashboardStore = new DashboardStore()) {}

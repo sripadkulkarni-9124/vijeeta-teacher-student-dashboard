@@ -19,6 +19,7 @@ describe("dashboard responsive contract", () => {
   it("defines distinct teacher and student dashboard layouts", () => {
     expect(css).toContain(".teacher-dashboard__grid");
     expect(css).toContain(".student-test-groups");
+    expect(css).toContain(".student-question__choice");
     expect(css).toContain(".teacher-tools");
   });
 });

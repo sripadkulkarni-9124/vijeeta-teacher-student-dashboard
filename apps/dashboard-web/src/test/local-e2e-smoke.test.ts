@@ -72,15 +72,15 @@ describe("local dashboard end-to-end smoke", () => {
 
     const started = await postAction({
       type: "start-attempt",
-      assignmentId: "assignment-physics-foundations-01",
+      assignmentId: assignment.assignment.id,
     });
     const submitted = await postAction({
       type: "submit-attempt",
       attemptId: started.attempt.id,
-      responses: [
-        { questionId: "question-kinematics-01", selectedChoiceId: "choice-a" },
-        { questionId: "question-units-01", selectedChoiceId: "choice-b" },
-      ],
+      responses: started.attempt.questions.map((question: { id: string; choices: Array<{ id: string }> }, index: number) => ({
+        questionId: question.id,
+        selectedChoiceId: question.choices[index % question.choices.length].id,
+      })),
     });
     expect(submitted.result.score).toBeGreaterThan(0);
 
@@ -92,7 +92,10 @@ describe("local dashboard end-to-end smoke", () => {
       ]),
     );
     expect(studentAfter.insights.personal.attempted).toBeGreaterThan(1);
-    expect(teacherAfter.insights.aggregate.attempted).toBeGreaterThan(1);
+    expect(teacherAfter.insights.aggregate.attempted).toBe(1);
+    expect(teacherAfter.insights.aggregate.attempted).toBeLessThanOrEqual(
+      teacherAfter.classes.flatMap((entry: { roster: unknown[] }) => entry.roster).length,
+    );
   });
 });
 

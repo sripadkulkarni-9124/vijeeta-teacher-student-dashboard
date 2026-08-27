@@ -23,6 +23,13 @@ function invalidRequest(error: unknown): Response {
   return problemResponse({ code: "invalid_request", message: "Request validation failed" }, 400);
 }
 
+function internalError(): Response {
+  return problemResponse({
+    code: "internal_error",
+    message: "The local dashboard store could not complete the request",
+  }, 500);
+}
+
 function isValidationError(error: unknown): error is { issues: Array<{ path: Array<string | number>; message: string }> } {
   return typeof error === "object" && error !== null && Array.isArray((error as { issues?: unknown }).issues);
 }
@@ -32,7 +39,7 @@ export async function GET(request: Request): Promise<Response> {
     const role = DashboardRoleSchema.parse(new URL(request.url).searchParams.get("role"));
     return Response.json(await activeService().snapshot(role), { headers: { "cache-control": "no-store" } });
   } catch (error) {
-    return invalidRequest(error);
+    return isValidationError(error) ? invalidRequest(error) : internalError();
   }
 }
 
@@ -43,7 +50,7 @@ export async function POST(request: Request): Promise<Response> {
   } catch (error) {
     if (isValidationError(error) || error instanceof SyntaxError) return invalidRequest(error);
     if (error instanceof DashboardStoreError) return problemResponse({ code: "invalid_request", message: error.message }, error.code === "not_found" ? 404 : 409);
-    return invalidRequest(error);
+    return internalError();
   }
 }
 

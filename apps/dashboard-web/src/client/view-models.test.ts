@@ -123,4 +123,78 @@ describe("dashboard API view models", () => {
     expect(view.selectedTestId).toBe("assignment-next");
     expect(view.insights.averageScore).toBe("80%");
   });
+
+  it("maps in-progress attempt questions and choices into the selected student test", () => {
+    const input: ApiStudentSnapshot = {
+      ...base,
+      role: "student",
+      session: {
+        role: "student",
+        userId: "student-1",
+        displayName: "Aarav Kulkarni",
+        organisationId: "org-1",
+      },
+      assignments: [
+        {
+          id: "assignment-1",
+          testId: "test-1",
+          title: "Motion checkpoint",
+          recipients: [
+            {
+              kind: "class",
+              id: "class-1",
+              label: "Class 11 Physics",
+              status: "pending",
+            },
+          ],
+          createdAt: "2026-08-27T00:00:00.000Z",
+        },
+      ],
+      attempts: [
+        {
+          id: "attempt-1",
+          assignmentId: "assignment-1",
+          studentId: "student-1",
+          status: "in-progress",
+          startedAt: "2026-08-27T00:00:00.000Z",
+          submittedAt: null,
+          responses: [],
+          questions: [
+            {
+              id: "question-1",
+              prompt: "What does the slope of a distance-time graph represent?",
+              marks: 1,
+              choices: [
+                { id: "choice-speed", label: "Speed" },
+                { id: "choice-force", label: "Force" },
+              ],
+            },
+          ],
+        },
+      ],
+      results: [],
+      insights: {
+        personal: { attempted: 0, averageScore: 0, score: 0, latestScore: 0 },
+      },
+    };
+
+    const view = toStudentView(input);
+
+    expect(view.tests[0]).toEqual(
+      expect.objectContaining({
+        status: "in-progress",
+        questions: [
+          {
+            id: "question-1",
+            prompt: "What does the slope of a distance-time graph represent?",
+            choices: [
+              { id: "choice-speed", label: "Speed" },
+              { id: "choice-force", label: "Force" },
+            ],
+          },
+        ],
+      }),
+    );
+    expect(view.selectedTestId).toBe("assignment-1");
+  });
 });

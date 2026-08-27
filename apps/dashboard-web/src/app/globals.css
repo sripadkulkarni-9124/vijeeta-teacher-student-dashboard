@@ -394,6 +394,48 @@ dd {
   width: fit-content;
 }
 
+.student-question-list {
+  display: grid;
+  gap: 16px;
+  margin-top: 12px;
+}
+
+.student-question {
+  border: 1px solid var(--vjt-color-divider);
+  border-radius: 12px;
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 16px;
+}
+
+.student-question legend {
+  font-weight: 700;
+  padding: 0 6px;
+}
+
+.student-question__choice {
+  align-items: center;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  min-height: 44px;
+  padding: 8px 10px;
+}
+
+.student-question__choice:has(input:checked) {
+  background: #eaf1f5;
+  border-color: var(--vjt-color-accent);
+}
+
+.student-question__choice input {
+  accent-color: var(--vjt-color-accent);
+  min-height: 20px;
+  width: 20px;
+}
+
 .student-insight-grid {
   display: grid;
   gap: 14px;

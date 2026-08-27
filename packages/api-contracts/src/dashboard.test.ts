@@ -5,6 +5,7 @@ import {
   TeacherDashboardSnapshotSchema,
   StudentDashboardSnapshotSchema,
   parseDashboardAction,
+  parseDashboardDispatchResult,
   parseDashboardSnapshot,
 } from "./dashboard";
 
@@ -53,5 +54,21 @@ describe("dashboard contracts", () => {
     expect(() => StudentDashboardSnapshotSchema.parse(teacher)).toThrow();
     expect(parseDashboardSnapshot(teacher)).toEqual(teacher);
     expect(DashboardSnapshotSchema.parse(teacher).role).toBe("teacher");
+  });
+
+  it("validates successful mutation envelopes", () => {
+    const result = parseDashboardDispatchResult({
+      type: "student-invited",
+      invite: {
+        id: "invite-1",
+        email: "learner@example.test",
+        classId: "class-1",
+        status: "pending",
+        createdAt: "2026-08-27T00:00:00.000Z",
+      },
+    });
+
+    expect(result.type).toBe("student-invited");
+    expect(() => parseDashboardDispatchResult({ type: "student-invited", invite: {} })).toThrow();
   });
 });

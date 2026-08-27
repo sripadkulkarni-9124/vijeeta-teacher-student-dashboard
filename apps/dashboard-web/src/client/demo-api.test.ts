@@ -40,7 +40,16 @@ describe("demo API client", () => {
     const transport = vi
       .fn()
       .mockResolvedValueOnce(
-        new Response(JSON.stringify({ type: "student-invited", invite: {} }), {
+        new Response(JSON.stringify({
+          type: "student-invited",
+          invite: {
+            id: "invite-1",
+            email: "new@example.test",
+            classId: "class-1",
+            status: "pending",
+            createdAt: "2026-08-27T00:00:00.000Z",
+          },
+        }), {
           status: 201,
         }),
       )
@@ -57,12 +66,26 @@ describe("demo API client", () => {
       classId: "class-1",
     };
 
-    await api.mutate(input);
+    await expect(api.mutate(input)).resolves.toEqual(
+      expect.objectContaining({ type: "student-invited" }),
+    );
     expect(transport).toHaveBeenNthCalledWith(1, "/api/demo", {
       body: JSON.stringify(input),
       headers: { "content-type": "application/json" },
       method: "POST",
     });
     await expect(api.mutate(input)).rejects.toThrow("Bad input");
+  });
+
+  it("rejects malformed success payloads", async () => {
+    const api = createDemoApi(async () =>
+      new Response(JSON.stringify({ type: "student-invited", invite: {} }), { status: 201 }),
+    );
+
+    await expect(api.mutate({
+      type: "invite-student",
+      email: "new@example.test",
+      classId: "class-1",
+    })).rejects.toThrow();
   });
 });

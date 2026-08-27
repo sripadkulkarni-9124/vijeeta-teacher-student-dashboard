@@ -28,6 +28,24 @@ const readySnapshot: StudentDashboardSnapshot = {
       dueAt: "Tomorrow, 2:00 PM",
       durationMinutes: 20,
       questionCount: 10,
+      questions: [
+        {
+          id: "question-speed",
+          prompt: "Which quantity describes distance travelled per unit time?",
+          choices: [
+            { id: "choice-speed", label: "Speed" },
+            { id: "choice-force", label: "Force" },
+          ],
+        },
+        {
+          id: "question-unit",
+          prompt: "What is the SI unit of acceleration?",
+          choices: [
+            { id: "choice-ms", label: "m/s" },
+            { id: "choice-ms2", label: "m/s²" },
+          ],
+        },
+      ],
     },
     {
       id: "test-pending",
@@ -84,7 +102,7 @@ describe("StudentDashboard", () => {
     expect(screen.getByRole("button", { name: "Start test" })).toBeVisible();
   });
 
-  it("moves the selected test from ready to in-progress and then submitted/result", async () => {
+  it("requires every answer and submits the learner's selected choices", async () => {
     const onStartAttempt = vi.fn(async () => undefined);
     const onSubmitAttempt = vi.fn(async () => undefined);
     render(
@@ -99,9 +117,30 @@ describe("StudentDashboard", () => {
     await waitFor(() => expect(onStartAttempt).toHaveBeenCalledWith("test-assigned"));
     expect(screen.getAllByText("In progress")[0]).toBeVisible();
     expect(screen.getByRole("button", { name: "Submit attempt" })).toBeVisible();
+    expect(
+      screen.getByRole("group", {
+        name: "Question 1: Which quantity describes distance travelled per unit time?",
+      }),
+    ).toBeVisible();
+    expect(screen.getByRole("radio", { name: "Speed" })).toBeVisible();
+    expect(screen.getByRole("radio", { name: "m/s²" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "Submit attempt" }));
-    await waitFor(() => expect(onSubmitAttempt).toHaveBeenCalledWith("test-assigned"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Answer every question before submitting. 2 answers are missing.",
+    );
+    expect(onSubmitAttempt).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "Speed" }));
+    fireEvent.click(screen.getByRole("radio", { name: "m/s²" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit attempt" }));
+
+    await waitFor(() =>
+      expect(onSubmitAttempt).toHaveBeenCalledWith("test-assigned", [
+        { questionId: "question-speed", selectedChoiceId: "choice-speed" },
+        { questionId: "question-unit", selectedChoiceId: "choice-ms2" },
+      ]),
+    );
     expect(screen.getAllByText("Submitted")[0]).toBeVisible();
     expect(screen.getByText(/result will appear here/i)).toBeVisible();
   });
