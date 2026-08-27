@@ -433,6 +433,136 @@ export const ReconcileAssignmentRequestSchema = z.object({
 });
 export type ReconcileAssignmentRequest = z.infer<typeof ReconcileAssignmentRequestSchema>;
 
+const V3BoundedLabelSchema = z.string().trim().min(1).max(240);
+const V3EpochSecondsSchema = z.number().finite().nonnegative().max(10_000_000_000);
+const V3NullableScoreSchema = z.number().finite().min(-1_000_000).max(1_000_000).nullable();
+const V3RunnerPathSchema = z.string().min(4).max(512).refine(
+  (path) => /^\/t\/[A-Za-z0-9_-]{16,256}$/.test(path),
+  "Runner path must be a safe V3 test capability path",
+);
+
+export const V3OwnedJobSchema = z.object({
+  id: IdentifierSchema,
+  title: V3BoundedLabelSchema,
+  status: z.enum(["draft", "built", "in_review", "final", "trashed"]),
+  grade: z.union([z.string().trim().max(32), z.number().finite()]).optional(),
+  createdAt: z.union([IsoTimestampSchema, V3EpochSecondsSchema]).optional(),
+  updatedAt: z.union([IsoTimestampSchema, V3EpochSecondsSchema]).optional(),
+}).strict();
+export type V3OwnedJob = z.infer<typeof V3OwnedJobSchema>;
+
+export const V3OwnedJobsSchema = z.object({
+  jobs: z.array(V3OwnedJobSchema).max(MAX_PAGE_SIZE),
+  page: z.number().int().positive().max(1_000_000),
+  pageSize: z.number().int().positive().max(50),
+  total: z.number().int().nonnegative().max(10_000_000),
+  pages: z.number().int().nonnegative().max(1_000_000),
+}).strict();
+export type V3OwnedJobs = z.infer<typeof V3OwnedJobsSchema>;
+
+export const V3ShareResultSchema = z.object({
+  shareId: IdentifierSchema,
+  testId: IdentifierSchema,
+  runnerPath: V3RunnerPathSchema,
+  readout: z.object({
+    resolved: z.number().int().nonnegative().max(MAX_RECIPIENTS),
+    batches: z.number().int().nonnegative().max(MAX_RECIPIENTS),
+    warnings: z.array(z.string().trim().min(1).max(240)).max(20),
+  }).strict(),
+}).strict();
+export type V3ShareResult = z.infer<typeof V3ShareResultSchema>;
+
+export const V3ShareStudentResultSchema = z.object({
+  uid: IdentifierSchema.nullable(),
+  attempted: z.boolean(),
+  score: V3NullableScoreSchema,
+  maxScore: V3NullableScoreSchema,
+  accuracy: z.number().finite().min(0).max(1).nullable(),
+  timeMs: z.number().int().nonnegative().max(86_400_000).nullable(),
+}).strict();
+export const V3ShareResultsSchema = z.object({
+  shareId: IdentifierSchema,
+  testId: IdentifierSchema,
+  funnel: z.object({
+    shared: z.number().int().nonnegative().max(MAX_RECIPIENTS),
+    attempted: z.number().int().nonnegative().max(MAX_RECIPIENTS),
+    pending: z.number().int().nonnegative().max(MAX_RECIPIENTS),
+  }).strict(),
+  averageScore: V3NullableScoreSchema,
+  students: z.array(V3ShareStudentResultSchema).max(MAX_RECIPIENTS),
+}).strict();
+export type V3ShareResults = z.infer<typeof V3ShareResultsSchema>;
+
+export const V3IndividualTestInsightSchema = z.object({
+  uid: IdentifierSchema,
+  testId: IdentifierSchema,
+  available: z.boolean(),
+  title: V3BoundedLabelSchema.nullable(),
+  score: V3NullableScoreSchema,
+  maxScore: V3NullableScoreSchema,
+  percentile: z.number().finite().min(0).max(100).nullable(),
+  deltaFromPrevious: z.number().finite().min(-1_000_000).max(1_000_000).nullable(),
+}).strict();
+export type V3IndividualTestInsight = z.infer<typeof V3IndividualTestInsightSchema>;
+
+export const V3StudentTestCardSchema = z.object({
+  testId: IdentifierSchema,
+  title: V3BoundedLabelSchema,
+  teacherLabel: V3BoundedLabelSchema,
+  kind: z.string().trim().min(1).max(32),
+  sharedAtEpochSeconds: V3EpochSecondsSchema,
+  state: z.string().trim().min(1).max(32),
+  score: V3NullableScoreSchema,
+  maxScore: V3NullableScoreSchema,
+  runnerPath: V3RunnerPathSchema.nullable(),
+}).strict();
+export const V3StudentTestListSchema = z.object({
+  tests: z.array(V3StudentTestCardSchema).max(MAX_RECIPIENTS),
+}).strict();
+export type V3StudentTestList = z.infer<typeof V3StudentTestListSchema>;
+
+export const V3StudentTestReadSchema = z.object({
+  testId: IdentifierSchema,
+  title: V3BoundedLabelSchema,
+  kind: z.string().trim().min(1).max(32),
+  durationMinutes: z.number().int().positive().max(1_440),
+  sectionCount: z.number().int().nonnegative().max(100),
+  window: z.object({ open: V3EpochSecondsSchema.nullable(), close: V3EpochSecondsSchema.nullable() }).strict().nullable(),
+}).strict();
+export type V3StudentTestRead = z.infer<typeof V3StudentTestReadSchema>;
+
+export const V3StudentAttemptSummarySchema = z.object({
+  testId: IdentifierSchema,
+  title: V3BoundedLabelSchema.nullable(),
+  score: V3NullableScoreSchema,
+  maxScore: V3NullableScoreSchema,
+  attemptedAt: IsoTimestampSchema.nullable(),
+}).strict();
+export const V3StudentAttemptsSchema = z.object({ attempts: z.array(V3StudentAttemptSummarySchema).max(MAX_RECIPIENTS) }).strict();
+export type V3StudentAttempts = z.infer<typeof V3StudentAttemptsSchema>;
+
+export const V3StudentTestReviewSchema = z.object({
+  testId: IdentifierSchema,
+  available: z.boolean(),
+  locked: z.boolean(),
+  score: V3NullableScoreSchema,
+  maxScore: V3NullableScoreSchema,
+  solutionsHidden: z.string().trim().min(1).max(240).nullable(),
+}).strict();
+export type V3StudentTestReview = z.infer<typeof V3StudentTestReviewSchema>;
+
+export const V3StudentOverallInsightSchema = z.object({
+  available: z.boolean(),
+  message: z.string().trim().min(1).max(240).nullable(),
+  testCount: z.number().int().nonnegative().max(1_000_000),
+  readinessMarks: z.number().finite().min(0).max(1_000_000).nullable(),
+  readinessOf: z.number().finite().positive().max(1_000_000).nullable(),
+  readinessPercentile: z.number().finite().min(0).max(100).nullable(),
+  growthVerdict: z.string().trim().min(1).max(64).nullable(),
+  growthPerTest: z.number().finite().min(-100).max(100).nullable(),
+}).strict();
+export type V3StudentOverallInsight = z.infer<typeof V3StudentOverallInsightSchema>;
+
 export const AdminReasonRequestSchema = z.object({ reason: BoundedTextSchema(500) }).strict();
 export type AdminReasonRequest = z.infer<typeof AdminReasonRequestSchema>;
 export const AdminProfileListResponseSchema = z.object({ profiles: z.array(DashboardProfileV2Schema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict();

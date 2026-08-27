@@ -13,6 +13,13 @@ import {
   InviteClassroomMemberRequestSchema,
   InspectInvitationResponseSchema,
   UpdateActiveRoleRequestSchema,
+  V3IndividualTestInsightSchema,
+  V3OwnedJobsSchema,
+  V3ShareResultSchema,
+  V3ShareResultsSchema,
+  V3StudentTestListSchema,
+  V3StudentTestReadSchema,
+  V3StudentTestReviewSchema,
   VerifiedPrincipalSchema,
 } from "./connected-dashboard";
 
@@ -308,5 +315,86 @@ describe("connected dashboard contracts", () => {
     });
     expect(inspected.targetEmailMatches).toBe(true);
     expect(() => InspectInvitationResponseSchema.parse({ ...inspected, targetEmail: "student@example.com", tokenDigest: "d".repeat(64) })).toThrow();
+  });
+
+  it("strictly projects bounded V3 assignment DTOs", () => {
+    const jobs = V3OwnedJobsSchema.parse({
+      jobs: [{ id: "JOB-1", title: "Mechanics", status: "final" }],
+      page: 1,
+      pageSize: 50,
+      total: 1,
+      pages: 1,
+    });
+    expect(jobs.jobs[0]?.id).toBe("JOB-1");
+    expect(() => V3OwnedJobsSchema.parse({ ...jobs, key: "legacy-admin" })).toThrow();
+
+    const shared = V3ShareResultSchema.parse({
+      shareId: "SH-1",
+      testId: "shared-job-1",
+      runnerPath: "/t/opaque-capability",
+      readout: { resolved: 1, batches: 0, warnings: [] },
+    });
+    expect(shared.runnerPath).toBe("/t/opaque-capability");
+    expect(() => V3ShareResultSchema.parse({ ...shared, token: "opaque-capability" })).toThrow();
+  });
+
+  it("keeps V3 insight DTOs free of email, answers, and raw attempt payloads", () => {
+    const aggregate = V3ShareResultsSchema.parse({
+      shareId: "SH-1",
+      testId: "shared-job-1",
+      funnel: { shared: 2, attempted: 1, pending: 1 },
+      averageScore: 42,
+      students: [{ uid: "student-1", attempted: true, score: 42, maxScore: 100, accuracy: 0.5, timeMs: 1200 }],
+    });
+    expect(aggregate.students[0]).not.toHaveProperty("email");
+    expect(() => V3ShareResultsSchema.parse({ ...aggregate, pendingEmails: ["student@example.com"] })).toThrow();
+
+    const individual = V3IndividualTestInsightSchema.parse({
+      uid: "student-1",
+      testId: "shared-job-1",
+      available: true,
+      title: "Mechanics",
+      score: 42,
+      maxScore: 100,
+      percentile: 80,
+      deltaFromPrevious: 5,
+    });
+    expect(() => V3IndividualTestInsightSchema.parse({ ...individual, answers: [{ qid: "q1", answer: 2 }] })).toThrow();
+  });
+
+  it("strictly bounds Student V3 read, launch, and review projections", () => {
+    const tests = V3StudentTestListSchema.parse({
+      tests: [{
+        testId: "shared-job-1",
+        title: "Mechanics",
+        teacherLabel: "teacher",
+        kind: "main",
+        sharedAtEpochSeconds: 1_787_808_000,
+        state: "open",
+        score: null,
+        maxScore: null,
+        runnerPath: "/t/opaque-capability",
+      }],
+    });
+    expect(tests.tests).toHaveLength(1);
+
+    expect(V3StudentTestReadSchema.parse({
+      testId: "shared-job-1",
+      title: "Mechanics",
+      kind: "main",
+      durationMinutes: 180,
+      sectionCount: 3,
+      window: { open: 1_787_808_000, close: null },
+    }).sectionCount).toBe(3);
+
+    const review = V3StudentTestReviewSchema.parse({
+      testId: "shared-job-1",
+      available: true,
+      locked: false,
+      score: 42,
+      maxScore: 100,
+      solutionsHidden: "until the test closes",
+    });
+    expect(() => V3StudentTestReviewSchema.parse({ ...review, review: [{ correctAnswer: 2 }] })).toThrow();
   });
 });

@@ -1,6 +1,10 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { parseV3ReadRoute } from "@vijeeta/api-contracts";
+
+import { V3AssignmentAdapter } from "./server/v3-assignment-adapter";
+import { V3InsightAdapter } from "./server/v3-insight-adapter";
 
 const appRoot = resolve(process.cwd());
 
@@ -40,5 +44,17 @@ describe("production fixture boundary", () => {
     expect(cloudBuild).toContain("asia-south1-docker.pkg.dev/neetcompanion-50b1f/cloud-run-source-deploy/vijeeta-dashboard:");
     expect(cloudBuild).toContain("^[0-9a-f]{40}$");
     expect(cloudBuild).not.toContain("latest");
+  });
+
+  it("keeps privileged V3 share and insight routes out of the generic browser BFF", () => {
+    expect(() => parseV3ReadRoute(["paperdesk", "shares"], new URLSearchParams())).toThrow();
+    expect(() => parseV3ReadRoute(["paperdesk", "shares", "SH-1", "results"], new URLSearchParams())).toThrow();
+    expect(() => parseV3ReadRoute(["paperdesk", "shares", "SH-1", "student", "uid-1", "analysis"], new URLSearchParams())).toThrow();
+
+    const options = { baseUrl: new URL("https://v3.example.test"), fetchImpl: async () => new Response() };
+    expect(new V3AssignmentAdapter(options)).not.toHaveProperty("request");
+    expect(new V3AssignmentAdapter(options)).not.toHaveProperty("get");
+    expect(new V3InsightAdapter(options)).not.toHaveProperty("request");
+    expect(new V3InsightAdapter(options)).not.toHaveProperty("get");
   });
 });
