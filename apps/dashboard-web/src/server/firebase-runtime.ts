@@ -14,6 +14,7 @@ import { VerifiedPrincipalSchema, type VerifiedPrincipal } from "./principal";
 
 const FIREBASE_APP_NAME = "vijeeta-dashboard-server";
 const DASHBOARD_DATABASE_ID = "vijeeta-dashboard";
+const APPROVED_FIREBASE_PROJECT_ID = "neetcompanion-50b1f";
 
 interface FirebaseAuthLike {
   verifyIdToken(token: string, checkRevoked: boolean): Promise<{
@@ -29,20 +30,30 @@ interface FirebaseAuthLike {
 export class FirebaseIdTokenVerifier implements TokenVerifier {
   constructor(
     private readonly auth: FirebaseAuthLike,
-    private readonly firebaseProjectId: string,
-  ) {}
+    firebaseProjectId: string,
+  ) {
+    if (firebaseProjectId !== APPROVED_FIREBASE_PROJECT_ID) {
+      throw new Error("Firebase token verifier requires the approved project");
+    }
+  }
 
   async verify(authorization: string): Promise<VerifiedPrincipal> {
     try {
       const header = bearerToken(authorization);
       const decoded = await this.auth.verifyIdToken(header.slice("Bearer ".length), true);
-      if (decoded.aud !== this.firebaseProjectId) throw new Error("Verified token belongs to another Firebase project");
+      if (decoded.aud !== APPROVED_FIREBASE_PROJECT_ID) throw new Error("Verified token belongs to another Firebase project");
       if (typeof decoded.auth_time !== "number" || !Number.isSafeInteger(decoded.auth_time) || decoded.auth_time < 0) {
         throw new Error("Verified token has no authentication time");
       }
+      if (Object.hasOwn(decoded, "email_verified") && typeof decoded.email_verified !== "boolean") {
+        throw new Error("Verified token has an invalid email verification claim");
+      }
+      const email = typeof decoded.email === "string"
+        ? decoded.email.trim().toLowerCase()
+        : decoded.email ?? null;
       return VerifiedPrincipalSchema.parse({
         uid: decoded.uid,
-        email: decoded.email ?? null,
+        email,
         emailVerified: decoded.email_verified === true,
         displayName: decoded.name ?? null,
         authTime: new Date(decoded.auth_time * 1000).toISOString(),
@@ -65,18 +76,21 @@ let runtimePromise: Promise<FirebaseServerRuntime> | undefined;
 
 export async function getProductionFirebaseRuntime(config: V3RuntimeConfig = loadRuntimeConfig()): Promise<FirebaseServerRuntime> {
   if (config.mode !== "production") throw new TokenVerificationError("Firebase production runtime is unavailable", 503);
+  if (config.firebaseProjectId !== APPROVED_FIREBASE_PROJECT_ID) {
+    throw new TokenVerificationError("Firebase production runtime is unavailable", 503);
+  }
   const databaseId = assertDashboardDatabaseId(config.firestoreDatabaseId, config.mode);
   runtimePromise ??= Promise.resolve().then(() => {
     try {
       const existingApp = getApps().find((candidate) => candidate.name === FIREBASE_APP_NAME);
-      if (existingApp && existingApp.options.projectId !== config.firebaseProjectId) {
+      if (existingApp && existingApp.options.projectId !== APPROVED_FIREBASE_PROJECT_ID) {
         throw new Error("Existing Firebase application is bound to another project");
       }
       const app = existingApp
-        ?? initializeApp({ credential: applicationDefault(), projectId: config.firebaseProjectId }, FIREBASE_APP_NAME);
+        ?? initializeApp({ credential: applicationDefault(), projectId: APPROVED_FIREBASE_PROJECT_ID }, FIREBASE_APP_NAME);
       const firestore = getFirestore(app, databaseId);
       return {
-        verifier: new FirebaseIdTokenVerifier(getAuth(app), config.firebaseProjectId),
+        verifier: new FirebaseIdTokenVerifier(getAuth(app), APPROVED_FIREBASE_PROJECT_ID),
         profiles: new FirestoreProfileStore({
           firestore: firestore as unknown as FirestoreLike,
           serverTimestamp: () => FieldValue.serverTimestamp(),

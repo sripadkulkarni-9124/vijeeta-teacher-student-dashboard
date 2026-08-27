@@ -74,6 +74,44 @@ describe("FirebaseIdTokenVerifier", () => {
     await expect(verifier.verify("Bearer signed-token")).rejects.toMatchObject({ status: 401 });
   });
 
+  it("rejects an injected foreign project before token verification", () => {
+    const verifyIdToken = vi.fn(async () => ({ uid: "u1", aud: "another-project", auth_time: 1_787_875_200 }));
+
+    expect(() => new FirebaseIdTokenVerifier({ verifyIdToken }, "another-project")).toThrow(/project/i);
+    expect(verifyIdToken).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["string", "true"],
+    ["number", 1],
+    ["object", { verified: true }],
+    ["undefined", undefined],
+  ])("rejects a non-boolean email_verified %s claim", async (_label, emailVerified) => {
+    const verifier = new FirebaseIdTokenVerifier({
+      verifyIdToken: async () => ({
+        uid: "u1",
+        aud: "neetcompanion-50b1f",
+        email: "teacher@example.test",
+        email_verified: emailVerified,
+        auth_time: 1_787_875_200,
+      }),
+    }, "neetcompanion-50b1f");
+
+    await expect(verifier.verify("Bearer signed-token")).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("allows legitimately absent email and email_verified claims", async () => {
+    const absentEmail = new FirebaseIdTokenVerifier({
+      verifyIdToken: async () => ({ uid: "u1", aud: "neetcompanion-50b1f", auth_time: 1_787_875_200 }),
+    }, "neetcompanion-50b1f");
+    const absentVerification = new FirebaseIdTokenVerifier({
+      verifyIdToken: async () => ({ uid: "u2", aud: "neetcompanion-50b1f", email: "teacher@example.test", auth_time: 1_787_875_200 }),
+    }, "neetcompanion-50b1f");
+
+    await expect(absentEmail.verify("Bearer signed-token")).resolves.toMatchObject({ email: null, emailVerified: false });
+    await expect(absentVerification.verify("Bearer signed-token")).resolves.toMatchObject({ email: "teacher@example.test", emailVerified: false });
+  });
+
   it("distinguishes a missing server credential from an invalid caller token", async () => {
     const credentialFailure = Object.assign(new Error("ADC unavailable"), { code: "app/invalid-credential" });
     const verifier = new FirebaseIdTokenVerifier({ verifyIdToken: async () => { throw credentialFailure; } }, "neetcompanion-50b1f");
@@ -124,5 +162,18 @@ describe("Firestore database guard", () => {
       firebaseProjectId: "neetcompanion-50b1f",
       adminBootstrap: { version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] },
     })).rejects.toMatchObject({ status: 503 });
+  });
+
+  it("rejects an injected foreign runtime project before Firebase Admin initialization", async () => {
+    await expect(getProductionFirebaseRuntime({
+      baseUrl: new URL("https://v3.example.test"),
+      timeoutMs: 5000,
+      mode: "production",
+      build: "test",
+      firestoreDatabaseId: "vijeeta-dashboard",
+      firebaseProjectId: "another-project",
+      adminBootstrap: { version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] },
+    })).rejects.toMatchObject({ status: 503 });
+    expect(admin.initializeApp).not.toHaveBeenCalled();
   });
 });

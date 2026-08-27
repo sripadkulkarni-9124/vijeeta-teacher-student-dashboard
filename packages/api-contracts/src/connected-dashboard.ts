@@ -37,6 +37,7 @@ export const VerifiedPrincipalSchema = z.object({
   email: NormalizedEmailSchema.nullable(),
   emailVerified: z.boolean(),
   displayName: BoundedTextSchema(160).nullable(),
+  authTime: IsoTimestampSchema,
 }).strict().superRefine((principal, context) => {
   if (principal.emailVerified && principal.email === null) {
     context.addIssue({ code: "custom", message: "A verified principal requires an email", path: ["email"] });

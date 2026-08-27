@@ -53,11 +53,20 @@ describe("connected dashboard contracts", () => {
       email: "teacher@example.com",
       emailVerified: true,
       displayName: "Teacher One",
+      authTime: timestamp,
     });
 
     expect(principal.uid).toBe("firebase-user-1");
+    expect(() => VerifiedPrincipalSchema.parse({
+      uid: "firebase-user-1",
+      email: "teacher@example.com",
+      emailVerified: true,
+      displayName: "Teacher One",
+    })).toThrow();
     expect(() => VerifiedPrincipalSchema.parse({ ...principal, roles: { admin: "active" } })).toThrow();
     expect(() => VerifiedPrincipalSchema.parse({ ...principal, email: "Teacher@example.com" })).toThrow();
+    expect(() => VerifiedPrincipalSchema.parse({ ...principal, authTime: "not-a-time" })).toThrow();
+    expect(() => VerifiedPrincipalSchema.parse({ ...principal, authTime: `2026-08-28T00:00:00.${"0".repeat(80)}Z` })).toThrow();
   });
 
   it("rejects active assignments without a bounded immutable recipient snapshot", () => {
