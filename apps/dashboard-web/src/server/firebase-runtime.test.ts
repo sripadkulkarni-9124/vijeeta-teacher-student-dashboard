@@ -34,25 +34,49 @@ beforeEach(() => {
 });
 
 describe("FirebaseIdTokenVerifier", () => {
-  it("verifies only the bearer token and returns the canonical Firebase UID", async () => {
-    const verifyIdToken = vi.fn(async () => ({ uid: "canonical-uid", email: "ignored@example.test", role: "forged" }));
-    const verifier = new FirebaseIdTokenVerifier({ verifyIdToken });
+  it("checks revocation and returns only the verified Firebase principal", async () => {
+    const verifyIdToken = vi.fn(async () => ({
+      uid: "canonical-uid",
+      aud: "neetcompanion-50b1f",
+      email: " Teacher@Example.TEST ",
+      email_verified: true,
+      name: "Teacher One",
+      auth_time: 1_787_875_200,
+      role: "forged",
+    }));
+    const verifier = new FirebaseIdTokenVerifier({ verifyIdToken }, "neetcompanion-50b1f");
 
-    await expect(verifier.verify("Bearer signed-token")).resolves.toEqual({ uid: "canonical-uid" });
-    expect(verifyIdToken).toHaveBeenCalledWith("signed-token");
+    await expect(verifier.verify("Bearer signed-token")).resolves.toEqual({
+      uid: "canonical-uid",
+      email: "teacher@example.test",
+      emailVerified: true,
+      displayName: "Teacher One",
+      authTime: "2026-08-28T00:00:00.000Z",
+    });
+    expect(verifyIdToken).toHaveBeenCalledWith("signed-token", true);
   });
 
-  it("maps invalid tokens and missing canonical UIDs to authentication failures", async () => {
-    const invalid = new FirebaseIdTokenVerifier({ verifyIdToken: async () => { throw new Error("invalid"); } });
-    const missingUid = new FirebaseIdTokenVerifier({ verifyIdToken: async () => ({ uid: "" }) });
+  it("maps invalid tokens and malformed canonical principals to authentication failures", async () => {
+    const invalid = new FirebaseIdTokenVerifier({ verifyIdToken: async () => { throw new Error("invalid"); } }, "neetcompanion-50b1f");
+    const missingUid = new FirebaseIdTokenVerifier({ verifyIdToken: async () => ({ uid: "", aud: "neetcompanion-50b1f", auth_time: 1_787_875_200 }) }, "neetcompanion-50b1f");
+    const missingAuthTime = new FirebaseIdTokenVerifier({ verifyIdToken: async () => ({ uid: "u1", aud: "neetcompanion-50b1f" }) }, "neetcompanion-50b1f");
 
     await expect(invalid.verify("Bearer invalid")).rejects.toMatchObject({ status: 401 });
     await expect(missingUid.verify("Bearer invalid" )).rejects.toMatchObject({ status: 401 });
+    await expect(missingAuthTime.verify("Bearer invalid" )).rejects.toMatchObject({ status: 401 });
+  });
+
+  it("rejects a token decoded for a different Firebase project", async () => {
+    const verifier = new FirebaseIdTokenVerifier({
+      verifyIdToken: async () => ({ uid: "u1", aud: "another-project", auth_time: 1_787_875_200 }),
+    }, "neetcompanion-50b1f");
+
+    await expect(verifier.verify("Bearer signed-token")).rejects.toMatchObject({ status: 401 });
   });
 
   it("distinguishes a missing server credential from an invalid caller token", async () => {
     const credentialFailure = Object.assign(new Error("ADC unavailable"), { code: "app/invalid-credential" });
-    const verifier = new FirebaseIdTokenVerifier({ verifyIdToken: async () => { throw credentialFailure; } });
+    const verifier = new FirebaseIdTokenVerifier({ verifyIdToken: async () => { throw credentialFailure; } }, "neetcompanion-50b1f");
     await expect(verifier.verify("Bearer signed-token")).rejects.toMatchObject({ status: 503 });
   });
 });
@@ -74,6 +98,7 @@ describe("Firestore database guard", () => {
       build: "test",
       firestoreDatabaseId: "vijeeta-dashboard",
       firebaseProjectId: "neetcompanion-50b1f",
+      adminBootstrap: { version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] },
     });
 
     expect(admin.applicationDefault).toHaveBeenCalledOnce();
@@ -85,5 +110,19 @@ describe("Firestore database guard", () => {
       expect.objectContaining({ name: "vijeeta-dashboard-server" }),
       "vijeeta-dashboard",
     );
+  });
+
+  it("rejects an existing Firebase Admin application bound to another project", async () => {
+    admin.getApps.mockReturnValue([{ name: "vijeeta-dashboard-server", options: { projectId: "another-project" } }]);
+
+    await expect(getProductionFirebaseRuntime({
+      baseUrl: new URL("https://v3.example.test"),
+      timeoutMs: 5000,
+      mode: "production",
+      build: "test",
+      firestoreDatabaseId: "vijeeta-dashboard",
+      firebaseProjectId: "neetcompanion-50b1f",
+      adminBootstrap: { version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] },
+    })).rejects.toMatchObject({ status: 503 });
   });
 });
