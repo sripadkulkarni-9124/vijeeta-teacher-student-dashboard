@@ -15,7 +15,7 @@ export function createTeacherArchiveClassroomRouteHandler(dependencies: Dependen
     requireNoQuery(request);
     const classroomId = parseRouteId((await routeContext.params).id);
     const input = await parseJsonBody(request, AdminReasonRequestSchema);
-    const classroom = await dependencies.classrooms.archive(principal, classroomId, { now: now(), correlationId, reason: input.reason });
+    const classroom = await dependencies.classrooms.archiveOwned(principal, classroomId, { now: now(), correlationId, reason: input.reason });
     return jsonResponse(ClassroomResponseSchema.parse({ classroom }), { correlationId });
   }, { createCorrelationId: dependencies.createCorrelationId });
 }

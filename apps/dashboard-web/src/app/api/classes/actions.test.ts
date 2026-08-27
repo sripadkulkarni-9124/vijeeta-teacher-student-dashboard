@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { Classroom, ClassroomInvite, DashboardProfileV2, VerifiedPrincipal } from "@vijeeta/api-contracts";
-import type { InvitationRepository, PaginatedClassroomRepository, ProfileRepository } from "../../../server/dashboard-store";
+import { DashboardStoreError, type InvitationRepository, type PaginatedClassroomRepository, type ProfileRepository } from "../../../server/dashboard-store";
 import { createTeacherArchiveClassroomRouteHandler } from "./[id]/archive/route";
 import { createTeacherRedeliverInvitationRouteHandler } from "./[id]/invitations/[inviteId]/redeliver/route";
 import { createTeacherRevokeInvitationRouteHandler } from "./[id]/invitations/[inviteId]/revoke/route";
@@ -15,7 +15,10 @@ const invite: ClassroomInvite = { id: "invite-1", classroomId: classroom.id, own
 
 function dependencies(actor = profile) {
   const profiles: Pick<ProfileRepository, "getProfile"> = { getProfile: vi.fn(async () => actor) };
-  const classrooms = { archive: vi.fn(async () => ({ ...classroom, status: "archived" as const })) } as unknown as PaginatedClassroomRepository;
+  const classrooms = {
+    archive: vi.fn(async () => ({ ...classroom, status: "archived" as const })),
+    archiveOwned: vi.fn(async () => ({ ...classroom, status: "archived" as const })),
+  } as unknown as PaginatedClassroomRepository;
   const invitations = { revokeInvitation: vi.fn(async () => ({ ...invite, status: "revoked" as const })) } as unknown as InvitationRepository;
   const coordinator = { redeliver: vi.fn(async () => ({ ...invite, tokenVersion: 2, delivery: "sent" as const, deliveryErrorCategory: null })) };
   const common = { verifier: { verify: vi.fn(async () => principal) }, profiles, now: () => NOW, createCorrelationId: () => CORRELATION_ID };
@@ -37,7 +40,7 @@ describe("Teacher classroom state actions", () => {
     expect((await flow.archive(post("Term ended"), classContext)).status).toBe(200);
     expect((await flow.revoke(post("Recipient removed"), inviteContext)).status).toBe(200);
     expect((await flow.redeliver(post("Recipient requested a new link"), inviteContext)).status).toBe(200);
-    expect(flow.classrooms.archive).toHaveBeenCalledWith(principal, "class-1", { now: NOW, correlationId: CORRELATION_ID, reason: "Term ended" });
+    expect(flow.classrooms.archiveOwned).toHaveBeenCalledWith(principal, "class-1", { now: NOW, correlationId: CORRELATION_ID, reason: "Term ended" });
     expect(flow.invitations.revokeInvitation).toHaveBeenCalledWith(principal, "class-1", "invite-1", { now: NOW, correlationId: CORRELATION_ID, reason: "Recipient removed" });
     expect(flow.coordinator.redeliver).toHaveBeenCalledTimes(1);
   });
@@ -48,5 +51,20 @@ describe("Teacher classroom state actions", () => {
     expect((await denied.archive(post("Forged"), classContext)).status).toBe(403);
     expect((await dependencies().revoke(post(""), inviteContext)).status).toBe(400);
     expect(denied.classrooms.archive).not.toHaveBeenCalled();
+  });
+
+  it("denies a multi-role Admin+Teacher cross-owner archive on the Teacher route", async () => {
+    const actor = { ...profile, roles: { teacher: "active" as const, admin: "active" as const }, activeRole: "teacher" as const };
+    const flow = dependencies(actor);
+    vi.mocked(flow.classrooms.archiveOwned).mockRejectedValueOnce(new DashboardStoreError(
+      "Classroom is outside the verified principal scope",
+      "classroom_forbidden",
+    ));
+    const response = await flow.archive(post("Teacher workspace archive"), classContext);
+    expect(response.status).toBe(403);
+    expect(flow.classrooms.archiveOwned).toHaveBeenCalledWith(principal, "class-1", {
+      now: NOW, correlationId: CORRELATION_ID, reason: "Teacher workspace archive",
+    });
+    expect(flow.classrooms.archive).not.toHaveBeenCalled();
   });
 });

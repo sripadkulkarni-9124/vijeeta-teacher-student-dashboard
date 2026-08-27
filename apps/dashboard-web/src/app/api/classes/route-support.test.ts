@@ -23,27 +23,41 @@ class MemoryInvitations implements InvitationRepository {
   async resolveInvitationForAcceptance() { return this.inspectInvitation(); }
   async listRoster() { return { members: [], invitations: [], nextMemberCursor: null, nextInvitationCursor: null }; }
   async createInvitation(actor: VerifiedPrincipal, input: Parameters<InvitationRepository["createInvitation"]>[1], mutation: MutationContext) {
+    if (this.invite !== null) {
+      this.operations.push("replayed");
+      return { disposition: "idempotent_replay" as const, invite: this.invite };
+    }
     this.operations.push("persisted");
     this.invite = { ...input, ownerUid: actor.uid, status: "pending", delivery: "pending", acceptedUid: null, acceptedAt: null, createdAt: mutation.now, updatedAt: mutation.now };
-    return this.invite;
+    return { disposition: "created" as const, invite: this.invite };
   }
-  async beginInvitationDelivery() {
+  async beginInvitationDelivery(actor: VerifiedPrincipal, classroomId: string, invitationId: string, provider: "capture" | "smtp", expected: { tokenDigest: string; tokenVersion: number }) {
+    void actor;
+    void classroomId;
+    void invitationId;
+    void provider;
     if (this.invite === null) throw new Error("not persisted");
+    if (this.invite.tokenDigest !== expected.tokenDigest || this.invite.tokenVersion !== expected.tokenVersion) throw new Error("token mismatch");
     this.operations.push("attempt");
     return { attemptId: "attempt-1", dispatch: { invite: this.invite, classroomName: "Physics A", teacherName: "Teacher", teacherEmail: "teacher@example.test" } };
   }
-  async completeInvitationDelivery(_actor: VerifiedPrincipal, _classId: string, _inviteId: string, _attemptId: string, outcome: InvitationDeliveryOutcome, mutation: MutationContext) {
+  async completeInvitationDelivery(actor: VerifiedPrincipal, classId: string, inviteId: string, attemptId: string, outcome: InvitationDeliveryOutcome, mutation: MutationContext) {
+    void actor;
+    void classId;
+    void inviteId;
+    void attemptId;
     if (this.invite === null) throw new Error("missing");
     this.operations.push(`completed:${outcome.status}`);
     this.lastOutcome = outcome;
     this.invite = { ...this.invite, delivery: outcome.status, ...(outcome.status === "unknown" ? { deliveryErrorCategory: "ambiguous" as const } : {}), updatedAt: mutation.now };
     return this.invite;
   }
-  async rotateInvitation(_actor: VerifiedPrincipal, input: Parameters<InvitationRepository["rotateInvitation"]>[1], mutation: MutationContext) {
+  async rotateInvitation(actor: VerifiedPrincipal, input: Parameters<InvitationRepository["rotateInvitation"]>[1], mutation: MutationContext) {
+    void actor;
     if (this.invite === null) throw new Error("transition unavailable");
     this.operations.push("rotated");
     this.invite = { ...this.invite, tokenDigest: input.tokenDigest, tokenVersion: input.tokenVersion, expiresAt: input.expiresAt, delivery: "pending", updatedAt: mutation.now };
-    return this.invite;
+    return { disposition: "rotated" as const, invite: this.invite };
   }
   async revokeInvitation(): Promise<ClassroomInvite> { throw new Error("unused"); }
   async acceptInvitation(): Promise<ClassroomMembership> { throw new Error("unused"); }
@@ -107,5 +121,22 @@ describe("ClassroomInvitationCoordinator", () => {
     expect(newToken).not.toBe(oldToken);
     await expect(flow.inspect({ ...principal, uid: "student-uid", email: "student@example.test" }, oldToken)).rejects.toMatchObject({ code: "invitation_unavailable" });
     await expect(flow.inspect({ ...principal, uid: "student-uid", email: "student@example.test" }, newToken)).resolves.toMatchObject({ targetEmailMatches: true });
+  });
+
+  it("sends only for the caller whose token digest was newly persisted on a same-key replay", async () => {
+    const store = new MemoryInvitations();
+    const email = new RecordingEmail();
+    const flow = coordinator(store, email);
+
+    const [first, replay] = await Promise.all([
+      flow.invite(principal, "class-1", "student@example.test", context),
+      flow.invite(principal, "class-1", "student@example.test", context),
+    ]);
+
+    expect(replay).toMatchObject({ id: first.id, tokenDigest: first.tokenDigest, tokenVersion: first.tokenVersion, delivery: "pending" });
+    expect(email.deliveries).toHaveLength(1);
+    expect(store.operations).toEqual(["persisted", "replayed", "attempt", "completed:sent"]);
+    const usableToken = new URL(email.deliveries[0]!.invitationUrl).hash.slice("#token=".length);
+    await expect(flow.inspect({ ...principal, uid: "student-uid", email: "student@example.test" }, usableToken)).resolves.toMatchObject({ inviteId: "invite-1" });
   });
 });

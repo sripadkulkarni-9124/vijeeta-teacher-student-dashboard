@@ -94,6 +94,7 @@ export interface ClassroomRepository {
 
 export interface PaginatedClassroomRepository extends ClassroomRepository {
   listForPrincipalPage(principal: VerifiedPrincipal, page: PaginationRequest): Promise<Page<Classroom>>;
+  archiveOwned(principal: VerifiedPrincipal, classroomId: string, context: MutationContext): Promise<Classroom>;
 }
 
 export type CreateInvitationInput = Pick<
@@ -133,6 +134,19 @@ export interface InvitationDeliveryOutcome {
   retryable?: boolean;
 }
 
+export type InvitationCreationResult =
+  | { disposition: "created"; invite: ClassroomInvite }
+  | { disposition: "idempotent_replay"; invite: ClassroomInvite };
+
+export type InvitationRotationResult =
+  | { disposition: "rotated"; invite: ClassroomInvite }
+  | { disposition: "idempotent_replay"; invite: ClassroomInvite };
+
+export interface InvitationTokenBinding {
+  tokenDigest: string;
+  tokenVersion: number;
+}
+
 export interface InvitationRepository {
   getInvitation(classroomId: string, invitationId: string): Promise<ClassroomInvite | null>;
   inspectInvitation(principal: VerifiedPrincipal, invitationId: string): Promise<InvitationInspection>;
@@ -142,12 +156,13 @@ export interface InvitationRepository {
     principal: VerifiedPrincipal,
     input: CreateInvitationInput,
     context: MutationContext,
-  ): Promise<ClassroomInvite>;
+  ): Promise<InvitationCreationResult>;
   beginInvitationDelivery(
     principal: VerifiedPrincipal,
     classroomId: string,
     invitationId: string,
     provider: "capture" | "smtp",
+    expectedToken: InvitationTokenBinding,
     context: MutationContext,
   ): Promise<{ attemptId: string; dispatch: InvitationDispatch }>;
   completeInvitationDelivery(
@@ -162,7 +177,7 @@ export interface InvitationRepository {
     principal: VerifiedPrincipal,
     input: CreateInvitationInput,
     context: MutationContext,
-  ): Promise<ClassroomInvite>;
+  ): Promise<InvitationRotationResult>;
   revokeInvitation(
     principal: VerifiedPrincipal,
     classroomId: string,

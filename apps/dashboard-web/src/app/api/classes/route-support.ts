@@ -77,37 +77,26 @@ export class ClassroomInvitationCoordinator {
   async invite(principal: VerifiedPrincipal, classroomId: string, email: string, context: MutationContext): Promise<ClassroomInvite> {
     const invitationId = this.dependencies.createInvitationId();
     const issued = this.dependencies.tokens.issue(invitationId);
-    const invite = await this.dependencies.invitations.createInvitation(principal, {
+    const created = await this.dependencies.invitations.createInvitation(principal, {
       id: invitationId, classroomId, normalizedEmail: email, tokenDigest: issued.digest, tokenVersion: issued.version, expiresAt: issued.expiresAt,
     }, context);
-    if (invite.id !== invitationId) {
-      if (invite.delivery !== "pending") return invite;
-      const replayIssued = this.dependencies.tokens.issue(invite.id, {
-        version: invite.tokenVersion + 1,
-        expiresAt: new Date(Date.parse(context.now) + 7 * 24 * 60 * 60 * 1_000).toISOString(),
-      });
-      const rotated = await this.dependencies.invitations.rotateInvitation(principal, {
-        id: invite.id,
-        classroomId: invite.classroomId,
-        normalizedEmail: invite.normalizedEmail,
-        tokenDigest: replayIssued.digest,
-        tokenVersion: replayIssued.version,
-        expiresAt: replayIssued.expiresAt,
-      }, context);
-      return this.deliver(principal, rotated, replayIssued.urlFragment, context);
-    }
-    return this.deliver(principal, invite, issued.urlFragment, context);
+    if (created.disposition === "idempotent_replay") return created.invite;
+    return this.deliver(principal, created.invite, issued.urlFragment, {
+      tokenDigest: issued.digest, tokenVersion: issued.version,
+    }, context);
   }
 
   async redeliver(principal: VerifiedPrincipal, classroomId: string, invitationId: string, context: MutationContext): Promise<ClassroomInvite> {
     const existing = await this.dependencies.invitations.getInvitation(classroomId, invitationId);
     if (existing === null) throw invitationUnavailable();
     const issued = this.dependencies.tokens.issue(invitationId, { version: existing.tokenVersion + 1, expiresAt: new Date(Date.parse(context.now) + 7 * 24 * 60 * 60 * 1_000).toISOString() });
-    const rotated = await this.dependencies.invitations.rotateInvitation(principal, {
+    const rotation = await this.dependencies.invitations.rotateInvitation(principal, {
       id: invitationId, classroomId, normalizedEmail: existing.normalizedEmail, tokenDigest: issued.digest, tokenVersion: issued.version, expiresAt: issued.expiresAt,
     }, context);
-    if (rotated.tokenVersion !== issued.version || rotated.delivery !== "pending") return rotated;
-    return this.deliver(principal, rotated, issued.urlFragment, context);
+    if (rotation.disposition === "idempotent_replay") return rotation.invite;
+    return this.deliver(principal, rotation.invite, issued.urlFragment, {
+      tokenDigest: issued.digest, tokenVersion: issued.version,
+    }, context);
   }
 
   async inspect(principal: VerifiedPrincipal, serialized: string): Promise<InspectInvitationResponse> {
@@ -138,9 +127,15 @@ export class ClassroomInvitationCoordinator {
     }, context);
   }
 
-  private async deliver(principal: VerifiedPrincipal, invite: ClassroomInvite, tokenFragment: string, context: MutationContext): Promise<ClassroomInvite> {
+  private async deliver(
+    principal: VerifiedPrincipal,
+    invite: ClassroomInvite,
+    tokenFragment: string,
+    expectedToken: { tokenDigest: string; tokenVersion: number },
+    context: MutationContext,
+  ): Promise<ClassroomInvite> {
     const { attemptId, dispatch } = await this.dependencies.invitations.beginInvitationDelivery(
-      principal, invite.classroomId, invite.id, this.dependencies.providerKind, context,
+      principal, invite.classroomId, invite.id, this.dependencies.providerKind, expectedToken, context,
     );
     const invitationUrl = buildInvitationAcceptanceUrl({ dashboardUrl: this.dependencies.dashboardUrl, tokenFragment, runtimeMode: this.dependencies.runtimeMode });
     let outcome;

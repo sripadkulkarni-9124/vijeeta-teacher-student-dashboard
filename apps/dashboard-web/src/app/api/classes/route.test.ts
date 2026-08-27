@@ -18,6 +18,7 @@ function dependencies(actor = profile) {
     listForPrincipal: vi.fn(async () => [classroom]),
     listForPrincipalPage: vi.fn(async () => ({ items: [classroom], nextCursor: null })),
     archive: vi.fn(async () => classroom),
+    archiveOwned: vi.fn(async () => classroom),
     restore: vi.fn(async () => classroom),
   };
   return { classrooms, handlers: createClassesRouteHandlers({ verifier: { verify: vi.fn(async () => principal) }, profiles, classrooms, now: () => NOW, createCorrelationId: () => CORRELATION_ID }) };
