@@ -18,7 +18,7 @@ This design adds no route, collection, IAM permission, traffic change, or code c
 | V3 adapter | Exact allowlisted calls with the caller's fresh Firebase Bearer token | Generic proxy, admin identity, retries of ambiguous writes |
 | Existing V3 | Test creation, share, audience enforcement, runner, attempts, grades, results/analysis | Dashboard profiles, roles, classrooms, invitation delivery |
 | Email adapter | One-purpose classroom invitation delivery | Membership authority, acceptance, password/auth messages |
-| Resend | Transactional transport after domain verification | Invite token validation, dashboard authorization |
+| Approved SMTP relay | Transactional transport with authenticated TLS | Invite token validation, dashboard authorization |
 
 All server routes derive the UID and verified email from a freshly verified Firebase ID token. Client-supplied UID, email, active role, ownership, or eligibility is never authoritative.
 
@@ -41,7 +41,7 @@ V3 creator eligibility is separate from dashboard Teacher approval. A dashboard 
 
 ### 3.3 Admin least privilege
 
-Admin may list and inspect dashboard profiles, approve/suspend Teacher eligibility, archive/restore dashboard-owned classes, revoke or request a fresh delivery for pending invitations, inspect invitation delivery state, and view immutable dashboard audit metadata. Admin has no default ability to read student answers, grades, individual insights, V3 bearer tokens, raw invite secrets, or Resend credentials. A future answer/insight support role must be a separate explicit capability with a separately reviewed audit policy.
+Admin may list and inspect dashboard profiles, approve/suspend Teacher eligibility, archive/restore dashboard-owned classes, revoke or request a fresh delivery for pending invitations, inspect invitation delivery state, and view immutable dashboard audit metadata. Admin has no default ability to read student answers, grades, individual insights, V3 bearer tokens, raw invite secrets, or SMTP credentials. A future answer/insight support role must be a separate explicit capability with a separately reviewed audit policy.
 
 Admin actions require a reason, fresh authorization, server-side target resolution, and an append-only audit event. Admin cannot rewrite or delete audit history through product APIs.
 
@@ -81,8 +81,8 @@ Required composite indexes are checked in before deployment and target only the 
 2. Teacher submits a student email. The server normalizes and validates it, creates a pending invite with a seven-day expiry and one-time token digest, then records `invite.created`.
 3. The email adapter receives a one-purpose DTO: recipient email, teacher verified name/email, class name, expiry, and join URL. The join URL is `https://<dashboard-host>/invite#token=<inviteId>.<secret>` so the raw token does not enter HTTP access logs or referrers.
 4. Local/test mode uses a capture-only adapter. It makes no network call and exposes captures only to the isolated test harness.
-5. Production accepts only `resend`, requires a validated public HTTPS dashboard URL, sender, API key secret, and invite-token pepper, and fails readiness closed when any is absent.
-6. Resend sends from `ViJEEta <invites@vijeeta.com>` after domain verification. `Reply-To` is the inviting teacher's verified email/name and the same identity appears in the body. The delivery attempt ID is the Resend idempotency key.
+5. Production accepts only `smtp`, requires a validated public HTTPS dashboard URL, an approved relay host/port, authenticated TLS mode, username/password secret, exact sender, and invite-token pepper, and fails readiness closed when any is absent. Plaintext SMTP and opportunistic TLS are rejected.
+6. The SMTP adapter sends from `ViJEEta <invites@vijeeta.com>`. `Reply-To` is the inviting teacher's verified email/name and the same identity appears in the body. A deterministic RFC Message-ID carries the delivery attempt ID. Because SMTP has no universal idempotency guarantee, an ambiguous post-DATA timeout is recorded as `unknown` and is never automatically retried.
 7. Delivery failure leaves membership absent and exposes a redacted retryable/permanent state to the owner. Retry rotates the invite secret, invalidates the prior token, and creates a new delivery attempt. No automatic infinite retries.
 8. The invitee signs in/signs up through Firebase. The browser takes the fragment token into memory, removes it from the visible URL, and submits it to the authenticated accept endpoint.
 9. The server validates the digest, expiry, status, and exact verified-email match. If Student is absent, the user must explicitly add Student before acceptance. The transaction writes membership, reverse projection, acceptance, and audit event.
@@ -91,7 +91,7 @@ Invitation messages contain no student data beyond the target address, teacher i
 
 ### Existing V3 mail audit
 
-Production V3 `POST /v3/paperdesk/jobs/{job_id}/share` validates and stores audience emails, registers the runner, mints a capability token, and returns a copy-ready `/t/{token}` link. Its service and API modules import no SMTP, Resend, SendGrid, Mailgun, Postmark, Twilio, WhatsApp, `requests`, or `httpx` delivery client. `docs/SHARED_TESTS_V5_PRD.md` explicitly lists “No mailer/WhatsApp notifications.” Therefore email delivery is not available through a supported V3 integration and Resend remains the isolated dashboard transport.
+Production V3 `POST /v3/paperdesk/jobs/{job_id}/share` validates and stores audience emails, registers the runner, mints a capability token, and returns a copy-ready `/t/{token}` link. Its service and API modules import no SMTP, Resend, SendGrid, Mailgun, Postmark, Twilio, WhatsApp, `requests`, or `httpx` delivery client. `docs/SHARED_TESTS_V5_PRD.md` explicitly lists “No mailer/WhatsApp notifications.” Therefore email delivery is not available through a supported V3 integration and the isolated dashboard SMTP adapter supplies notification transport.
 
 ## 6. Classroom assignment and V3 reuse
 
@@ -186,8 +186,8 @@ The supplied screen mapping is:
 
 - Existing pinned values: `VIJEETA_RUNTIME_MODE=production`, `VIJEETA_FIREBASE_PROJECT_ID=neetcompanion-50b1f`, `VIJEETA_FIRESTORE_DATABASE_ID=vijeeta-dashboard`, `VIJEETA_V3_BASE_URL=<exact approved examprep origin>`, `VIJEETA_BUILD_ID=<full SHA>`.
 - Public Firebase web configuration remains browser-visible and pinned; it is not an admin credential.
-- New non-secret values: `VIJEETA_DASHBOARD_PUBLIC_URL=<canonical Cloud Run HTTPS URL>`, `VIJEETA_INVITE_EMAIL_PROVIDER=resend`, `VIJEETA_INVITE_FROM=ViJEEta <invites@vijeeta.com>`, invite expiry/refresh limits within reviewed bounds.
-- Secret Manager: `vijeeta-dashboard-resend-api-key`, `vijeeta-dashboard-invite-token-pepper`, and `vijeeta-dashboard-admin-bootstrap` containing a versioned JSON allowlist of exact UID(s) and/or normalized verified email(s). No secret value appears in source, chat, build args, image layers, logs, or browser code.
+- New non-secret values: `VIJEETA_DASHBOARD_PUBLIC_URL=<canonical Cloud Run HTTPS URL>`, `VIJEETA_INVITE_EMAIL_PROVIDER=smtp`, `VIJEETA_INVITE_FROM=ViJEEta <invites@vijeeta.com>`, `VIJEETA_SMTP_HOST=<approved relay>`, `VIJEETA_SMTP_PORT=<approved TLS port>`, `VIJEETA_SMTP_TLS_MODE=implicit_tls|starttls_required`, invite expiry/refresh limits within reviewed bounds.
+- Secret Manager: `vijeeta-dashboard-smtp-credentials` containing versioned username/password JSON, `vijeeta-dashboard-invite-token-pepper`, and `vijeeta-dashboard-admin-bootstrap` containing a versioned JSON allowlist of exact UID(s) and/or normalized verified email(s). No secret value appears in source, chat, build args, image layers, logs, or browser code.
 
 The bootstrap secret is consumed only by the dashboard server. A matching verified identity creates the initial Admin role once and emits an audit event; changing the secret does not silently revoke persisted Admins. Subsequent Admin grants are not part of this release unless a separately reviewed two-person flow is added.
 
@@ -200,14 +200,14 @@ The bootstrap secret is consumed only by the dashboard server. A matching verifi
 - Deployer gets `iam.serviceAccountUser` on this runtime account only.
 - No Firebase Admin key, project Editor/Owner, default-database access, broad Secret Manager access, service-account key, legacy runtime identity, or browser credentials.
 
-Required user/provider actions before email can be enabled: create/own the Resend account, verify `vijeeta.com` (or explicitly approve a sending subdomain) with Resend's current DNS records, create a send-only/restricted API key, approve the sender, and supply one existing verified Firebase UID or email for Admin bootstrap.
+Required user/provider actions before email can be enabled: select an approved SMTP relay (no Gmail or third-party account is assumed), obtain its relay host/port/TLS requirement and restricted username/password, authorize `invites@vijeeta.com`, publish/verify SPF and DKIM (and DMARC alignment where applicable), store credentials in Secret Manager, and supply one existing verified Firebase UID or email for Admin bootstrap.
 
 ## 10. Observability, audit, and reconciliation
 
 - `/api/health` reports build, mode, dependency readiness, and safe reason codes without probing V3 with writes or exposing config values.
-- Structured logs include correlation ID, route template, actor internal profile ID, authorization decision category, latency, dependency, status, and assignment/invite IDs. They exclude Bearer tokens, invite secrets/digests, full emails, request bodies, V3 raw responses, Resend key, and student answers.
+- Structured logs include correlation ID, route template, actor internal profile ID, authorization decision category, latency, dependency, status, and assignment/invite IDs. They exclude Bearer tokens, invite secrets/digests, full emails, request bodies, V3 raw responses, SMTP credentials/server responses, and student answers.
 - Metrics: auth failures, authorization denials, invite delivery outcomes, acceptance outcomes, V3 read/write latency and errors, assignments by state, reconciliation age, insight freshness/errors, Firestore contention, and audit-write failures.
-- Security/audit mutations fail closed if the required Firestore audit mirror cannot be committed atomically. The corresponding canonical structured audit entry uses the same event ID as its log insert ID. External-call events record durable intent before the call and outcome afterward because Firestore and V3/Resend/Cloud Logging cannot share a transaction; a reconciliation metric alerts on a missing canonical/mirror counterpart.
+- Security/audit mutations fail closed if the required Firestore audit mirror cannot be committed atomically. The corresponding canonical structured audit entry uses the same event ID as its log insert ID. External-call events record durable intent before the call and outcome afterward because Firestore and V3/SMTP/Cloud Logging cannot share a transaction; a reconciliation metric alerts on a missing canonical/mirror counterpart.
 - Operators get a bounded reconciliation view for stuck delivery and V3 assignment states. No background worker blindly repeats non-idempotent V3 share writes.
 
 ## 11. Deployment, canary, and rollback
@@ -227,11 +227,13 @@ Application rollback routes only this new service to its previous known-good imm
 
 ## 12. Verification gate
 
-Implementation is test-driven and must pass unit, route-contract, store-transaction, adapter, UI, integration, smoke, lint, typecheck, production build, container, and independent security review gates. Required adversarial cases include forged role/UID/email, unverified or changed email, bootstrap spoofing, suspended Teacher, cross-owner class access, token guessing/replay/expiry/rotation, mismatched invitee, concurrent acceptance, duplicate reverse projections, audit failure, Resend failure/idempotency, recipient snapshot races, V3 ownership denial, ambiguous V3 share outcome, cross-assignment insight access, raw data leakage, default-database configuration, and secret/token log redaction.
+Implementation is test-driven and must pass unit, route-contract, store-transaction, adapter, UI, integration, smoke, lint, typecheck, production build, container, and independent security review gates. Required adversarial cases include forged role/UID/email, unverified or changed email, bootstrap spoofing, suspended Teacher, cross-owner class access, token guessing/replay/expiry/rotation, mismatched invitee, concurrent acceptance, duplicate reverse projections, audit failure, SMTP authentication/TLS/timeout/ambiguous-delivery behavior, recipient snapshot races, V3 ownership denial, ambiguous V3 share outcome, cross-assignment insight access, raw data leakage, default-database configuration, and secret/token log redaction.
 
 Visual verification renders deterministic states at representative desktop (1440×900), tablet (1024×768), and mobile (390×844) viewports. Manual screenshot comparison covers every supplied desktop/mobile reference and the added Admin/invitation states, checking hierarchy, grid spans, spacing rhythm, typography, color roles, card elevation, overflow, sticky/fixed navigation, keyboard focus, zoom, and reduced motion. Reference screenshots are design comparators, not pixel-perfect assertions for intentionally changed security/product behavior.
 
-Cloud deployment remains blocked until every gate is green and the exact cloud-write plan is re-approved with the Admin bootstrap identity and verified Resend domain state.
+A mandatory pre-cloud role gate starts the built production-mode service locally with explicitly guarded loopback-only emulator/test dependencies. The gate is accepted only when Cloud Run markers are absent, every dependency host is loopback, SMTP is capture-only, the bootstrap identity is synthetic, and no production V3/Firebase/Firestore/SMTP endpoint is reachable. It exercises Admin bootstrap and Teacher lifecycle/class/invite management, Teacher classroom/assignment/results flows, Student signup/invite acceptance/membership/V3-runner handoff/own insights, and cross-role denial. Exact passed and blocked flows plus terminal/build evidence are recorded and reported to the user before any cloud write.
+
+Cloud deployment remains blocked until every gate is green, the local production-mode three-role gate has passed and been reported to the user, and the exact cloud-write plan is re-approved with the Admin bootstrap identity, approved SMTP relay credentials, and verified sender-domain state.
 
 ## 13. Explicit limitations and future evolution
 

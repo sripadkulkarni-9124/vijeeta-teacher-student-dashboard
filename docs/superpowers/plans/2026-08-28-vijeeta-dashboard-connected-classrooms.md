@@ -4,9 +4,9 @@
 
 **Goal:** Build and verify the isolated production dashboard's Firebase onboarding, bootstrap Admin, Teacher approval, classrooms, email invitations, V3-backed assignment/attempt/insight flow, and Academic Precision UI without changing an existing Vijeeta service.
 
-**Architecture:** The Next.js dashboard is a same-origin BFF. It verifies Firebase ID tokens, resolves all roles and object authority from the named `vijeeta-dashboard` Firestore database, and calls only exact typed V3 routes with the caller's fresh Bearer token. Dashboard-owned writes use explicit state machines, create-only audit mirrors, a canonical structured audit stream, capture/Resend email adapters, immutable assignment-recipient snapshots, and fail-closed production configuration.
+**Architecture:** The Next.js dashboard is a same-origin BFF. It verifies Firebase ID tokens, resolves all roles and object authority from the named `vijeeta-dashboard` Firestore database, and calls only exact typed V3 routes with the caller's fresh Bearer token. Dashboard-owned writes use explicit state machines, create-only audit mirrors, a canonical structured audit stream, capture/SMTP email adapters, immutable assignment-recipient snapshots, and fail-closed production configuration.
 
-**Tech Stack:** TypeScript 6, Next.js 16 App Router, React 19, Zod contracts, Firebase Auth/Admin, named Firestore, Vitest/Testing Library, Cloud Run, Secret Manager, Resend.
+**Tech Stack:** TypeScript 6, Next.js 16 App Router, React 19, Zod contracts, Firebase Auth/Admin, named Firestore, Vitest/Testing Library, Nodemailer/SMTP, Cloud Run, Secret Manager.
 
 **Spec:** `docs/superpowers/specs/2026-08-28-vijeeta-dashboard-connected-classrooms-design.md`
 
@@ -19,7 +19,7 @@
 - Firestore project/database are pinned to `neetcompanion-50b1f` / `vijeeta-dashboard`; reject `default`, `(default)`, fixture, and local persistence in production.
 - V3 origin is pinned; generic V3 BFF remains GET-only. V3 share is a separate exact POST adapter with no automatic retry after an ambiguous outcome.
 - Existing V3 runner, submission, grading, solution release, and analysis remain authoritative.
-- Production email provider is Resend; local/CI provider is capture-only. No secret or raw invite token enters source, logs, URLs sent to the server, or browser persistence.
+- Production email provider is an approved authenticated TLS SMTP relay; local/CI provider is capture-only. No secret or raw invite token enters source, logs, URLs sent to the server, or browser persistence.
 - Academic Precision Stitch assets are the visual source of truth; mock-only password, share-link, test-generation, messaging, release, and embedded-runner behavior is not copied.
 - Every slice uses TDD, a focused verification command, `git diff --check`, and a small commit.
 - Preserve unrelated untracked files in `apps/dashboard-web/dev-fixture`.
@@ -43,7 +43,7 @@
 - `apps/dashboard-web/src/server/admin-bootstrap.ts`: parse/match versioned bootstrap allowlist.
 - `apps/dashboard-web/src/server/invite-token.ts`: generate, digest, parse, and constant-time verify invite tokens.
 - `apps/dashboard-web/src/server/email-provider.ts`: provider interface and capture implementation.
-- `apps/dashboard-web/src/server/resend-email-provider.ts`: fail-closed Resend adapter.
+- `apps/dashboard-web/src/server/smtp-email-provider.ts`: fail-closed SMTP adapter behind the provider interface.
 - `apps/dashboard-web/src/server/v3-assignment-adapter.ts`: exact share POST and strict projection.
 - `apps/dashboard-web/src/server/v3-insight-adapter.ts`: exact owner/student insight reads and projections.
 - `apps/dashboard-web/src/server/audit.ts`: structured canonical audit emitter and redaction.
@@ -80,6 +80,7 @@ Each route has a colocated `route.test.ts`; shared route parsing lives in `apps/
 - `docs/vijeeta-dashboard-operations.md`: observability/audit/reconciliation procedures.
 - `docs/deploy-vijeeta-dashboard.md`: exact secrets/IAM/canary/rollback proposal.
 - `apps/dashboard-web/src/test/connected-e2e-smoke.test.ts`: full local capture-mode flow.
+- `apps/dashboard-web/src/test/local-role-gate.ts`: starts/drives the built production-mode service against loopback-only test dependencies and writes evidence.
 - `apps/dashboard-web/src/test/security-boundaries.test.ts`: cross-role/object and redaction attacks.
 - `apps/dashboard-web/src/test/visual-reference.test.tsx`: deterministic responsive landmarks.
 
@@ -304,8 +305,8 @@ git commit -m "feat: add server-authorized admin lifecycle"
 - Create: `apps/dashboard-web/src/server/invite-token.test.ts`
 - Create: `apps/dashboard-web/src/server/email-provider.ts`
 - Create: `apps/dashboard-web/src/server/email-provider.test.ts`
-- Create: `apps/dashboard-web/src/server/resend-email-provider.ts`
-- Create: `apps/dashboard-web/src/server/resend-email-provider.test.ts`
+- Create: `apps/dashboard-web/src/server/smtp-email-provider.ts`
+- Create: `apps/dashboard-web/src/server/smtp-email-provider.test.ts`
 
 **Interfaces:**
 - Produces: `InviteTokenService.issue(inviteId)` and `.verify(serialized, storedDigest)`.
@@ -318,24 +319,27 @@ const issued = service.issue("inv-1");
 expect(issued.urlFragment).toMatch(/^inv-1\.[A-Za-z0-9_-]+$/);
 expect(issued.digest).not.toContain(issued.urlFragment);
 expect(service.verify(issued.urlFragment, issued.digest)).toBe(true);
-await expect(createProvider(prodConfigWithoutKey)).rejects.toThrow(/RESEND_API_KEY/);
+await expect(createProvider(prodConfigWithoutPassword)).rejects.toThrow(/SMTP credentials/);
 ```
 
-Cover 256-bit randomness, constant-time comparison, token rotation/replay, HTTPS public URL, verified sender domain, Reply-To from verified Teacher only, timeout, Resend 4xx/5xx, idempotency key, redaction, and zero network in capture mode.
+Cover 256-bit randomness, constant-time comparison, token rotation/replay, HTTPS public URL, exact From address, Reply-To from verified Teacher only, authenticated implicit TLS/required STARTTLS, invalid host/port/mode, authentication rejection, pre-DATA failure, ambiguous post-DATA timeout, deterministic Message-ID, redaction, and zero network in capture mode.
 
 - [ ] **Step 2: Run focused tests and confirm RED**
 
-Run: `pnpm --filter @vijeeta/dashboard-web test -- src/server/invite-token.test.ts src/server/email-provider.test.ts src/server/resend-email-provider.test.ts`
+Run: `pnpm --filter @vijeeta/dashboard-web test -- src/server/invite-token.test.ts src/server/email-provider.test.ts src/server/smtp-email-provider.test.ts`
 Expected: FAIL because adapters do not exist.
 
 - [ ] **Step 3: Implement token and provider adapters**
 
 ```ts
-await fetch("https://api.resend.com/emails", {
-  method: "POST",
-  headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json", "Idempotency-Key": attemptId },
-  body: JSON.stringify({ from, to: [input.recipientEmail], reply_to: input.teacherEmail, subject, html, text }),
-  signal: AbortSignal.timeout(timeoutMs),
+await transport.sendMail({
+  from: "ViJEEta <invites@vijeeta.com>",
+  to: input.recipientEmail,
+  replyTo: { name: input.teacherName, address: input.teacherEmail },
+  messageId: `<${attemptId}@vijeeta.com>`,
+  subject,
+  html,
+  text,
 });
 ```
 
@@ -343,13 +347,13 @@ Never return/log the API key, message body, raw token, or full provider error.
 
 - [ ] **Step 4: Run focused tests and typecheck**
 
-Run: `pnpm --filter @vijeeta/dashboard-web test -- src/server/invite-token.test.ts src/server/email-provider.test.ts src/server/resend-email-provider.test.ts && pnpm --filter @vijeeta/dashboard-web typecheck`
+Run: `pnpm --filter @vijeeta/dashboard-web test -- src/server/invite-token.test.ts src/server/email-provider.test.ts src/server/smtp-email-provider.test.ts && pnpm --filter @vijeeta/dashboard-web typecheck`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add apps/dashboard-web/src/server/invite-token* apps/dashboard-web/src/server/email-provider* apps/dashboard-web/src/server/resend-email-provider*
+git add apps/dashboard-web/src/server/invite-token* apps/dashboard-web/src/server/email-provider* apps/dashboard-web/src/server/smtp-email-provider* apps/dashboard-web/package.json pnpm-lock.yaml
 git commit -m "feat: add secure classroom invitation delivery"
 ```
 
@@ -647,7 +651,7 @@ Expected: FAIL until documentation/config/image boundaries are complete.
 
 - [ ] **Step 3: Write exact handoff/runbook documentation**
 
-Document components/data boundaries, all sequence flows, V3 route reuse, Firestore schema/invariants/indexes, API contract, Resend/capture decision, observability/audit/reconciliation, limitations/evolution, and canary/rollback.
+Document components/data boundaries, all sequence flows, V3 route reuse, Firestore schema/invariants/indexes, API contract, SMTP/capture decision and managed-provider substitution seam, observability/audit/reconciliation, limitations/evolution, and canary/rollback.
 
 The Admin bootstrap secret mechanism is:
 
@@ -686,10 +690,11 @@ git commit -m "docs: add connected dashboard operations runbook"
 - Create: `apps/dashboard-web/src/test/connected-e2e-smoke.test.ts`
 - Create: `apps/dashboard-web/src/test/security-boundaries.test.ts`
 - Create: `apps/dashboard-web/src/test/visual-reference.test.tsx`
+- Create: `apps/dashboard-web/src/test/local-role-gate.ts`
 - Create: `docs/vijeeta-dashboard-verification.md`
 
 **Interfaces:**
-- Proves the integrated local capture-mode flow and records release evidence. It does not contact Resend, V3 production, Firestore production, or GCP.
+- Proves the integrated local capture-mode flow and records release evidence. It does not contact SMTP, V3 production, Firestore production, or GCP.
 
 - [ ] **Step 1: Write the integrated flow before final fixes**
 
@@ -706,7 +711,7 @@ it("signs in, bootstraps admin, approves teacher, invites, joins, assigns, launc
 });
 ```
 
-Security tests cover every adversarial case listed in the spec. The V3/Resend clients are strict fakes; assert zero unexpected calls.
+Security tests cover every adversarial case listed in the spec. The V3/SMTP clients are strict fakes; assert zero unexpected calls.
 
 - [ ] **Step 2: Run full local gate and fix only evidenced failures**
 
@@ -717,11 +722,25 @@ Expected: PASS across the monorepo.
 
 Render sign-in, Admin, Teacher dashboard/roster/assignment insights, Student dashboard/insights, invite, and all loading/empty/error states at `2560×1250`, `1600×1280`, `780×1708`, `780×1402`, `390×844`, and breakpoint edges `767/768/1023/1024/1279/1280`. Compare manually against every supplied Stitch screenshot for hierarchy, grid, spacing, typography, color, elevation, overflow, navigation, drawer/modal, keyboard focus, zoom, and reduced motion. Record intentional product/security differences.
 
-- [ ] **Step 4: Request independent security and code review**
+- [ ] **Step 4: Run the mandatory production-mode local three-role gate**
+
+Start the built service from a terminal with `NODE_ENV=production` and `VIJEETA_RELEASE_GATE_MODE=loopback`, using only loopback Firebase/Auth/Firestore or strict in-process test dependencies, capture SMTP, and a strict local V3 fake. The runtime must refuse this mode when `K_SERVICE` is present, any dependency URL is non-loopback, SMTP is not capture, or the bootstrap config contains the real production Admin identity.
+
+Execute and record this matrix:
+
+1. Admin: synthetic verified sign-in → one-time bootstrap → list profiles → approve Teacher → inspect/archive/restore class → inspect/revoke/redeliver invite → suspend/restore Teacher → audit visibility; verify no student insight access.
+2. Teacher: sign up/request Teacher → denied while pending → access after approval → create class → invite Student → see delivery capture/status → assign owned fake V3 test → attempted/not-attempted → aggregate/authorized individual results; verify cross-owner denial and suspended denial.
+3. Student: sign up/select Student → inspect matching invite → accept/join → list own class/assignment → launch validated fake V3 runner handoff → simulated authoritative attempt/result fixture → refresh own insights; verify wrong-email invite, other Student data, Teacher/Admin pages are denied.
+4. Global: tokens remain memory-only, no production network connection occurs, no direct Firestore browser access exists, logs redact token/email/SMTP credentials, and health identifies release-gate dependencies without secrets.
+
+Run: `pnpm --filter @vijeeta/dashboard-web build && pnpm --filter @vijeeta/dashboard-web exec tsx src/test/local-role-gate.ts`
+Expected: exit 0 with a timestamped evidence report listing each flow PASS; any BLOCKED/FAIL result blocks cloud deployment and is reported exactly.
+
+- [ ] **Step 5: Request independent security and code review**
 
 Reviewers must inspect identity/role authority, Firestore database isolation, Admin bootstrap, invite crypto/email, IDOR, audit/redaction, V3 allowlists, ambiguity handling, image trace, and UI accessibility. Resolve all Critical/Important findings and rerun the full gate.
 
-- [ ] **Step 5: Commit verified release evidence**
+- [ ] **Step 6: Commit verified release evidence**
 
 ```bash
 git add apps/dashboard-web/src/test docs/vijeeta-dashboard-verification.md
@@ -748,7 +767,7 @@ Expected: PASS.
 
 - [ ] **Step 3: Produce the approval request**
 
-Report verified facts versus assumptions, initial Admin mechanism (not the secret value), Resend domain/key prerequisite, exact database/IAM/secrets/audit/service/image/region changes, GitHub connection and approval-required main trigger, dedicated build identity/IAM, authorized-domain step, candidate smoke limits, rollback, and any residual risk. Stop before database, IAM, secret, connection, trigger, build, deploy, Firebase, or provider writes.
+Report verified facts versus assumptions, initial Admin mechanism (not the secret value), approved SMTP relay/TLS/credential/SPF/DKIM prerequisite, exact database/IAM/secrets/audit/service/image/region changes, GitHub connection and approval-required main trigger, dedicated build identity/IAM, authorized-domain step, candidate smoke limits, rollback, and any residual risk. Stop before database, IAM, secret, connection, trigger, build, deploy, Firebase, or provider writes.
 
 - [ ] **Step 4: Push the reviewed feature branch only after the full gate**
 
