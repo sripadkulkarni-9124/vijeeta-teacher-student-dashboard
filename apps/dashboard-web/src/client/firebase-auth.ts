@@ -73,27 +73,31 @@ async function loadRuntime(): Promise<FirebaseRuntime> {
 /** Firebase Auth only. Tokens are refreshed on every API request and are never persisted. */
 export function createFirebaseAuth(options: { loadRuntime?: () => Promise<FirebaseRuntime> } = {}): ProductionAuthSession {
   let currentUser: ProductionUser | null = null;
-  const runtime = (options.loadRuntime ?? loadRuntime)().then((loaded) => {
-    currentUser = userFromFirebase(loaded.auth.currentUser);
-    return loaded;
-  });
+  let runtimePromise: Promise<FirebaseRuntime> | null = null;
+  const requireRuntime = () => {
+    runtimePromise ??= (options.loadRuntime ?? loadRuntime)().then((loaded) => {
+      currentUser = userFromFirebase(loaded.auth.currentUser);
+      return loaded;
+    });
+    return runtimePromise;
+  };
 
   const session: ProductionAuthSession = {
     get currentUser() {
       return currentUser;
     },
-    async getIdToken() {
-      const loaded = await runtime;
+    async getIdToken(forceRefresh = false) {
+      const loaded = await requireRuntime();
       const user = loaded.auth.currentUser;
       if (!user) throw new Error("Sign in to continue");
       currentUser = userFromFirebase(user);
-      return user.getIdToken(true);
+      return user.getIdToken(forceRefresh);
     },
     async signInWithEmailPassword() {
       throw new Error("Email/password sign-in is not enabled for this application");
     },
     async signInWithGoogle() {
-      const loaded = await runtime;
+      const loaded = await requireRuntime();
       const provider = new loaded.GoogleAuthProvider();
       try {
         const result = await loaded.signInWithPopup(loaded.auth, provider);
@@ -107,14 +111,14 @@ export function createFirebaseAuth(options: { loadRuntime?: () => Promise<Fireba
       }
     },
     async signOut() {
-      const loaded = await runtime;
+      const loaded = await requireRuntime();
       await loaded.signOut(loaded.auth);
       currentUser = null;
     },
     subscribe(listener) {
       let active = true;
       let firebaseUnsubscribe: (() => void) | null = null;
-      void runtime
+      void requireRuntime()
         .then((loaded) => {
           if (!active) return;
           firebaseUnsubscribe = loaded.onAuthStateChanged(loaded.auth, (user) => {

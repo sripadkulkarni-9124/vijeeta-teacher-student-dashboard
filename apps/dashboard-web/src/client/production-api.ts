@@ -10,7 +10,7 @@ export interface ProductionUser {
 
 export interface ProductionAuthSession {
   currentUser: ProductionUser | null;
-  getIdToken(): Promise<string>;
+  getIdToken(forceRefresh?: boolean): Promise<string>;
   signInWithEmailPassword(email: string, password: string): Promise<ProductionUser>;
   createAccountWithEmailPassword?(email: string, password: string): Promise<ProductionUser>;
   signInWithGoogle(): Promise<ProductionUser>;

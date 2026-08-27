@@ -4,6 +4,7 @@ import {
   AdminInvitationListResponseSchema,
   ApiErrorSchema,
   AssignmentInsightsResponseSchema,
+  AuditActionSchema,
   AuditEventSchema,
   ClassroomAssignmentSchema,
   ClassroomAssignmentProjectionSchema,
@@ -29,6 +30,10 @@ import {
 const timestamp = "2026-08-28T00:00:00.000Z";
 
 describe("connected dashboard contracts", () => {
+  it("includes the immutable active-role presentation audit action", () => {
+    expect(AuditActionSchema.parse("profile.active_role_changed")).toBe("profile.active_role_changed");
+  });
+
   it("requires a complete, server-owned profile", () => {
     expect(() => DashboardProfileV2Schema.parse({ firebaseUid: "u", roles: { admin: "active" } })).toThrow();
 

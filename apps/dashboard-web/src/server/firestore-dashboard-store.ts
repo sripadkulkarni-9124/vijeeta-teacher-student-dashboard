@@ -24,6 +24,7 @@ import {
   type ClassroomInvite,
   type ClassroomMembership,
   type ClassroomRosterResponse,
+  type ConnectedDashboardRole,
   type CreateClassroomRequest,
   type DashboardProfileOnboardRequest,
   type DashboardProfileV2,
@@ -203,6 +204,39 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     return result.value;
   }
 
+  async setActiveRole(
+    principalCandidate: VerifiedPrincipal,
+    activeRole: ConnectedDashboardRole,
+    context: MutationContext,
+  ): Promise<DashboardProfileV2> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    requireVerifiedEmail(principal);
+    const profileReference = this.profileReference(principal.uid);
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<DashboardProfileV2>> => {
+      const snapshot = await transaction.get(profileReference);
+      if (!snapshot.exists) throw new DashboardStoreError("Profile was not found", "profile_not_found");
+      const existing = profileFromSnapshot(snapshot, principal.uid);
+      await this.validateExistingVerifiedIdentity(transaction, principal, existing);
+      if (existing.roles[activeRole] !== "active") {
+        throw new DashboardStoreError("The requested role is not active", "role_not_active");
+      }
+      if (existing.activeRole === activeRole) return { value: existing, event: null };
+      const updated = DashboardProfileV2Schema.parse({ ...existing, activeRole, updatedAt: context.now });
+      transaction.update(profileReference, { activeRole, updatedAt: context.now });
+      const event = this.createAuditMirror(transaction, existing, {
+        action: "profile.active_role_changed",
+        targetType: "profile",
+        targetId: principal.uid,
+        context,
+        before: changes("activeRole", existing.activeRole),
+        after: changes("activeRole", activeRole),
+      });
+      return { value: updated, event };
+    });
+    await this.emit(result.event);
+    return result.value;
+  }
+
   async bootstrapAdmin(
     principalCandidate: VerifiedPrincipal,
     configCandidate: AdminBootstrapConfig,
@@ -221,7 +255,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
       const snapshot = await transaction.get(profileReference);
       const existing = snapshot.exists ? profileFromSnapshot(snapshot, principal.uid) : null;
       if (existing?.roles.admin !== undefined) {
-        await this.validateExistingAdminIdentity(transaction, principal, existing);
+        await this.validateExistingVerifiedIdentity(transaction, principal, existing);
         return { value: existing, event: null };
       }
       if (existing !== null && existing.verifiedEmail !== null && existing.verifiedEmail !== principal.email) {
@@ -1402,7 +1436,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     else transaction.create(reference, index);
   }
 
-  private async validateExistingAdminIdentity(
+  private async validateExistingVerifiedIdentity(
     transaction: FirestoreDashboardTransaction,
     principal: VerifiedPrincipal & { email: string; emailVerified: true },
     profile: DashboardProfileV2,

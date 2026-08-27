@@ -1,5 +1,5 @@
-import { ProductionDashboard } from "@/components/production-dashboard";
+import { ConnectedDashboardNavigation } from "@/components/production-dashboard";
 
 export default function HomePage() {
-  return <ProductionDashboard />;
+  return <ConnectedDashboardNavigation requestedRoute="root" />;
 }

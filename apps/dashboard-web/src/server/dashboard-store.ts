@@ -6,6 +6,7 @@ import type {
   ClassroomInvite,
   ClassroomMembership,
   ClassroomRosterResponse,
+  ConnectedDashboardRole,
   CreateClassroomAssignmentRequest,
   CreateClassroomRequest,
   DashboardProfileOnboardRequest,
@@ -30,6 +31,11 @@ export interface ProfileRepository {
   onboard(
     principal: VerifiedPrincipal,
     input: DashboardProfileOnboardRequest,
+    context: MutationContext,
+  ): Promise<DashboardProfileV2>;
+  setActiveRole(
+    principal: VerifiedPrincipal,
+    activeRole: ConnectedDashboardRole,
     context: MutationContext,
   ): Promise<DashboardProfileV2>;
   bootstrapAdmin(
@@ -265,6 +271,7 @@ export type DashboardStoreErrorCode =
   | "profile_exists"
   | "profile_not_found"
   | "reason_required"
+  | "role_not_active"
   | "teacher_transition_invalid"
   | "verified_email_changed"
   | "verified_email_required";

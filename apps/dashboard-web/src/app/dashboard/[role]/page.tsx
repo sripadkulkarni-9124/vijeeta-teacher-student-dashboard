@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 
-import { ProductionDashboard } from "@/components/production-dashboard";
+import { ConnectedDashboardNavigation } from "@/components/production-dashboard";
 
 export default async function RoleDashboardPage({
   params,
@@ -10,7 +10,7 @@ export default async function RoleDashboardPage({
   const { role } = await params;
   if (role !== "teacher" && role !== "student") notFound();
 
-  // This page is an empty shell. Every profile and V3 data request is
-  // authenticated and role-authorized again by the server-side API boundary.
-  return <ProductionDashboard />;
+  // Compatibility entry only; authority resolution replaces this legacy URL
+  // with the canonical role route after the server profile has been loaded.
+  return <ConnectedDashboardNavigation requestedRoute={role} />;
 }

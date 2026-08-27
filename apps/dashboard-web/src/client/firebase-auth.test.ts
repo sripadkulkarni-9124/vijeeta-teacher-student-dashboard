@@ -26,14 +26,26 @@ function runtime() {
 }
 
 describe("Firebase production auth", () => {
+  it("does not initialize Firebase until a browser auth operation or subscription needs it", () => {
+    const fake = runtime();
+    const loadRuntime = vi.fn(async () => fake.loaded);
+
+    const auth = createFirebaseAuth({ loadRuntime });
+
+    expect(auth.currentUser).toBeNull();
+    expect(loadRuntime).not.toHaveBeenCalled();
+  });
+
   it("refreshes tokens in memory and cleans up the Firebase listener", async () => {
     const fake = runtime();
     const auth = createFirebaseAuth({ loadRuntime: async () => fake.loaded });
     expect(auth.currentUser).toBeNull();
     const stop = auth.subscribe(vi.fn());
 
-    await expect(auth.getIdToken()).resolves.toBe("fresh-token");
-    expect(fake.firebaseUser.getIdToken).toHaveBeenCalledWith(true);
+    await expect(auth.getIdToken(false)).resolves.toBe("fresh-token");
+    await expect(auth.getIdToken(true)).resolves.toBe("fresh-token");
+    expect(fake.firebaseUser.getIdToken).toHaveBeenNthCalledWith(1, false);
+    expect(fake.firebaseUser.getIdToken).toHaveBeenNthCalledWith(2, true);
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
 

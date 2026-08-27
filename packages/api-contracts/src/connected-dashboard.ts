@@ -233,6 +233,7 @@ export type ClassroomAssignmentProjection = z.infer<typeof ClassroomAssignmentPr
 export const AuditActionSchema = z.enum([
   "admin.bootstrap",
   "profile.onboarded",
+  "profile.active_role_changed",
   "teacher.approved",
   "teacher.suspended",
   "classroom.created",

@@ -49,6 +49,7 @@ function repositories(overrides: Partial<ProfileRepository> = {}): ProfileReposi
       input.role === "teacher" ? { teacher: "pending" } : { student: "active" },
       input.role === "teacher" ? null : "student",
     )),
+    setActiveRole: vi.fn(async (verified, activeRole) => profile(verified.uid, { [activeRole]: "active" }, activeRole)),
     bootstrapAdmin: vi.fn(async (verified) => profile(verified.uid, { admin: "active" }, "admin")),
     ...overrides,
   };

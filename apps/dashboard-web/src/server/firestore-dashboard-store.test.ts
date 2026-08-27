@@ -303,6 +303,47 @@ async function activeTeacher(store: FirestoreDashboardStore, principalToApprove 
 }
 
 describe("FirestoreDashboardStore", () => {
+  it("switches only to an already-active role and audits without changing role grants", async () => {
+    const database = new FakeFirestore();
+    const { store, emitter } = storeFor(database);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    database.documents.set("profiles/student-uid", {
+      ...database.documents.get("profiles/student-uid"),
+      roles: { student: "active", teacher: "active", admin: "suspended" },
+    });
+
+    const updated = await store.setActiveRole(studentPrincipal, "teacher", context());
+
+    expect(updated).toMatchObject({ activeRole: "teacher", roles: { student: "active", teacher: "active", admin: "suspended" }, updatedAt: NOW });
+    expect(database.created("auditEvents").at(-1)?.data).toMatchObject({ action: "profile.active_role_changed", actorUid: "student-uid" });
+    expect(emitter.events.at(-1)?.action).toBe("profile.active_role_changed");
+  });
+
+  it("rejects ungranted, pending, suspended, and changed-email role switches without writes", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const before = database.committedWrites.length;
+    await expect(store.setActiveRole(studentPrincipal, "teacher", context())).rejects.toMatchObject({ code: "role_not_active" });
+    database.documents.set("profiles/student-uid", { ...database.documents.get("profiles/student-uid"), roles: { student: "active", teacher: "pending", admin: "suspended" } });
+    await expect(store.setActiveRole(studentPrincipal, "teacher", context())).rejects.toMatchObject({ code: "role_not_active" });
+    await expect(store.setActiveRole(studentPrincipal, "admin", context())).rejects.toMatchObject({ code: "role_not_active" });
+    await expect(store.setActiveRole({ ...studentPrincipal, email: "changed@example.test" }, "student", context())).rejects.toMatchObject({ code: "verified_email_changed" });
+    expect(database.committedWrites).toHaveLength(before);
+  });
+
+  it("does not change the active role when the immutable audit mirror cannot commit", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    database.documents.set("profiles/student-uid", { ...database.documents.get("profiles/student-uid"), roles: { student: "active", teacher: "active" } });
+    database.failCreateCollection = "auditEvents";
+
+    await expect(store.setActiveRole(studentPrincipal, "teacher", context())).rejects.toThrow(/injected create failure/);
+
+    expect(database.documents.get("profiles/student-uid")).toMatchObject({ activeRole: "student" });
+  });
+
   it("rejects default or foreign databases and exposes no runtime delete method", () => {
     const database = new FakeFirestore();
     const emitter = new CapturingAuditEmitter();

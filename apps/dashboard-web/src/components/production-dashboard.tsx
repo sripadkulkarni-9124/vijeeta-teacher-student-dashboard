@@ -1,19 +1,74 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import type { ConnectedDashboardRole, DashboardProfileV2 } from "@vijeeta/api-contracts";
+
+import { createConnectedApi, ConnectedApiError } from "@/client/connected-api";
 import { createFirebaseAuth } from "@/client/firebase-auth";
 import {
   createProductionApi,
   ProductionApiError,
   type ProductionApi,
+  type ProductionAuthSession,
   type ProductionProfile,
   type ProductionRole,
+  type ProductionUser,
 } from "@/client/production-api";
 
 export type { ProductionAuthSession, ProductionProfile } from "@/client/production-api";
 
 export type ProductionApiLike = ProductionApi;
+
+export type DashboardRouteState = "signed_out" | "onboarding" | "pending_teacher" | "suspended" | "student" | "teacher" | "admin" | "error";
+export type DashboardRequestedRoute = "root" | "onboarding" | "pending_teacher" | "suspended" | "student" | "teacher" | "admin" | "invite";
+
+export interface ConnectedNavigationApi {
+  auth: ProductionAuthSession;
+  getProfile(): Promise<DashboardProfileV2>;
+  onboard(role: "student" | "teacher"): Promise<DashboardProfileV2>;
+  setActiveRole(role: ConnectedDashboardRole): Promise<DashboardProfileV2>;
+}
+
+export function resolveDashboardRoute(input: {
+  authenticated: boolean;
+  profile: DashboardProfileV2 | null;
+  error?: boolean;
+}): { state: DashboardRouteState; canonicalPath: string } {
+  if (input.error) return { state: "error", canonicalPath: "/" };
+  if (!input.authenticated) return { state: "signed_out", canonicalPath: "/" };
+  const profile = input.profile;
+  if (profile === null || !profile.onboardingCompleted) return { state: "onboarding", canonicalPath: "/onboarding" };
+  if (profile.activeRole !== null && profile.roles[profile.activeRole] === "active") {
+    return { state: profile.activeRole, canonicalPath: `/${profile.activeRole}` };
+  }
+  if (Object.values(profile.roles).includes("suspended")) return { state: "suspended", canonicalPath: "/suspended" };
+  if (profile.roles.teacher === "pending") return { state: "pending_teacher", canonicalPath: "/pending-teacher" };
+  return { state: "error", canonicalPath: "/" };
+}
+
+export function resolveProtectedRoute(
+  requested: DashboardRequestedRoute,
+  authenticated: boolean,
+  profile: DashboardProfileV2 | null,
+): { render: boolean; redirect: string | null } {
+  const resolved = resolveDashboardRoute({ authenticated, profile });
+  if (requested === "invite") return authenticated ? { render: true, redirect: null } : { render: false, redirect: "/" };
+  if (requested === "root") return resolved.state === "signed_out"
+    ? { render: true, redirect: null }
+    : { render: false, redirect: resolved.canonicalPath };
+  return requested === resolved.state
+    ? { render: true, redirect: null }
+    : { render: false, redirect: resolved.canonicalPath };
+}
+
+export function consumeInviteTokenFragment(): string | null {
+  if (typeof window === "undefined") return null;
+  const parameters = new URLSearchParams(window.location.hash.replace(/^#/, ""));
+  const token = parameters.get("token");
+  window.history.replaceState({}, "", `${window.location.pathname}${window.location.search}`);
+  return token && token.length <= 1024 ? token : null;
+}
 
 type ViewState = "loading" | "onboarding" | "ready" | "error";
 
@@ -163,6 +218,182 @@ function RoleChoice({ profile, onChoose }: { profile: ProductionProfile | null; 
       {roles.includes("student") ? <button type="button" onClick={() => void onChoose("student")}>Continue as student</button> : null}
       {roles.includes("teacher") ? <button type="button" onClick={() => void onChoose("teacher")}>Continue as teacher</button> : null}
     </section>
+  );
+}
+
+function defaultConnectedNavigationApi(): ConnectedNavigationApi {
+  const auth = createFirebaseAuth();
+  const connected = createConnectedApi({
+    getIdToken: (forceRefresh) => auth.getIdToken(forceRefresh),
+  });
+  return { auth, getProfile: connected.getProfile, onboard: connected.onboard, setActiveRole: connected.setActiveRole };
+}
+
+function replacePath(path: string): void {
+  if (typeof window !== "undefined" && window.location.pathname !== path) window.history.replaceState({}, "", path);
+}
+
+function connectedMessage(error: unknown): string {
+  if (error instanceof ConnectedApiError) {
+    if (error.status === 401) return "Your sign-in expired. Sign in again to continue.";
+    if (error.status === 403) return "Your account is not authorized for this workspace.";
+    return error.message;
+  }
+  const code = error && typeof error === "object" ? (error as { code?: string }).code : undefined;
+  if (code === "auth/unauthorized-domain") return "This sign-in domain is not in the Firebase authorized domain list.";
+  return "The dashboard could not verify your access. Try again.";
+}
+
+/** Functional role gate. Task 10/11 replace these states with the final Academic Precision views. */
+export function ConnectedDashboardNavigation({
+  api: suppliedApi,
+  requestedRoute = "root",
+}: {
+  api?: ConnectedNavigationApi;
+  requestedRoute?: DashboardRequestedRoute;
+}) {
+  const api = useMemo(() => suppliedApi ?? defaultConnectedNavigationApi(), [suppliedApi]);
+  const [user, setUser] = useState(api.auth.currentUser);
+  const [profile, setProfile] = useState<DashboardProfileV2 | null>(null);
+  const [status, setStatus] = useState<"signed_out" | "loading" | "ready" | "error">(api.auth.currentUser ? "loading" : "signed_out");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [invitationLinkState, setInvitationLinkState] = useState<"unchecked" | "captured" | "missing">("unchecked");
+  const authorizationVersion = useRef(0);
+  const invitationToken = useRef<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    if (requestedRoute !== "invite" || invitationToken.current !== undefined) return;
+    invitationToken.current = consumeInviteTokenFragment();
+    setInvitationLinkState(invitationToken.current === null ? "missing" : "captured");
+  }, [requestedRoute]);
+
+  const loadProfile = useCallback(async (nextUser: ProductionUser) => {
+    const requestVersion = ++authorizationVersion.current;
+    setUser(nextUser);
+    setProfile(null);
+    setError(null);
+    setStatus("loading");
+    try {
+      const nextProfile = await api.getProfile();
+      if (requestVersion !== authorizationVersion.current) return;
+      setProfile(nextProfile);
+      setStatus("ready");
+    } catch (caught) {
+      if (requestVersion !== authorizationVersion.current) return;
+      const code = caught && typeof caught === "object" ? (caught as { code?: string }).code : undefined;
+      if (code === "profile_onboarding_required") {
+        setProfile(null);
+        setStatus("ready");
+      } else if (code === "unauthenticated" || (caught instanceof ConnectedApiError && caught.status === 401)) {
+        setUser(null);
+        setProfile(null);
+        setStatus("signed_out");
+      } else {
+        setProfile(null);
+        setError(connectedMessage(caught));
+        setStatus("error");
+      }
+    }
+  }, [api]);
+
+  useEffect(() => {
+    let active = true;
+    const authorize = (nextUser: ProductionUser | null) => {
+      if (!active) return;
+      setProfile(null);
+      setUser(nextUser);
+      if (nextUser === null) {
+        authorizationVersion.current += 1;
+        setStatus("signed_out");
+        setError(null);
+      } else {
+        void loadProfile(nextUser);
+      }
+    };
+    const unsubscribe = api.auth.subscribe(authorize);
+    if (api.auth.currentUser !== null) authorize(api.auth.currentUser);
+    return () => { active = false; unsubscribe(); };
+  }, [api, loadProfile]);
+
+  useEffect(() => {
+    if (status !== "ready") return;
+    const guard = resolveProtectedRoute(requestedRoute, user !== null, profile);
+    if (guard.redirect !== null) replacePath(guard.redirect);
+  }, [profile, requestedRoute, status, user]);
+
+  const signIn = async () => {
+    setBusy(true);
+    setError(null);
+    try { await loadProfile(await api.auth.signInWithGoogle()); }
+    catch (caught) { setError(connectedMessage(caught)); setStatus("signed_out"); }
+    finally { setBusy(false); }
+  };
+  const signOut = async () => {
+    authorizationVersion.current += 1;
+    setUser(null);
+    setProfile(null);
+    setStatus("signed_out");
+    replacePath("/");
+    try { await api.auth.signOut(); } catch { setError("Sign-out could not be completed. Try again."); }
+  };
+  const onboard = async (role: "student" | "teacher") => {
+    setProfile(null);
+    setStatus("loading");
+    try {
+      const next = await api.onboard(role);
+      setProfile(next);
+      setStatus("ready");
+      replacePath(resolveDashboardRoute({ authenticated: true, profile: next }).canonicalPath);
+    } catch (caught) { setError(connectedMessage(caught)); setStatus("error"); }
+  };
+  const switchRole = async (role: ConnectedDashboardRole) => {
+    if (profile?.roles[role] !== "active") return;
+    setProfile(null);
+    setStatus("loading");
+    try {
+      const next = await api.setActiveRole(role);
+      setProfile(next);
+      setStatus("ready");
+      replacePath(resolveDashboardRoute({ authenticated: true, profile: next }).canonicalPath);
+    } catch (caught) { setError(connectedMessage(caught)); setStatus("error"); }
+  };
+
+  if (status === "loading") return <p role="status">Checking your dashboard access…</p>;
+  if (status === "error") return <p role="alert">{error}</p>;
+  if (user === null || status === "signed_out") return (
+    <main><h1>Sign in to Vijeeta</h1><p>Use Google to sign in or create your account.</p>
+      <button type="button" disabled={busy} onClick={() => void signIn()}>{busy ? "Signing in…" : "Continue with Google"}</button>
+      {error ? <p role="alert">{error}</p> : null}
+    </main>
+  );
+
+  const resolved = resolveDashboardRoute({ authenticated: true, profile });
+  if (requestedRoute === "invite") return (
+    <main><h1>Classroom invitation</h1><p>{invitationLinkState === "missing" ? "Open the invitation link from your email to continue." : "Your invitation is held only in this tab while we verify it."}</p></main>
+  );
+  if (resolved.state === "onboarding") return (
+    <main><h1>Choose your workspace</h1><p>Admin access cannot be selected here.</p>
+      <button type="button" onClick={() => void onboard("student")}>Continue as student</button>
+      <button type="button" onClick={() => void onboard("teacher")}>Request Teacher access</button>
+    </main>
+  );
+  if (resolved.state === "pending_teacher") return <main><h1>Teacher approval pending</h1><p>An Admin must approve Teacher access before you can continue.</p></main>;
+  if (resolved.state === "suspended") return <main><h1>Workspace suspended</h1><p>This workspace is unavailable. Contact an administrator.</p></main>;
+  if (resolved.state === "error" || profile === null) return <p role="alert">The server profile has no active workspace.</p>;
+
+  const activeRoles = (["student", "teacher", "admin"] as const).filter((role) => profile.roles[role] === "active");
+  return (
+    <main>
+      <header><p>Signed in as {profile.verifiedEmail ?? profile.displayName}</p><button type="button" onClick={() => void signOut()}>Log out</button></header>
+      <h1>{resolved.state[0]!.toUpperCase() + resolved.state.slice(1)} workspace</h1>
+      <nav aria-label="Available workspaces">
+        {activeRoles.filter((role) => role !== resolved.state).map((role) => (
+          <button key={role} type="button" onClick={() => void switchRole(role)}>{role[0]!.toUpperCase() + role.slice(1)} workspace</button>
+        ))}
+      </nav>
+      <p>Your access was verified from your server profile.</p>
+    </main>
   );
 }
 

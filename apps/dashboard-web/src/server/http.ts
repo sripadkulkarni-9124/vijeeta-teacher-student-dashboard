@@ -255,6 +255,7 @@ function mapError(error: unknown): HttpError {
     case "assignment_forbidden":
     case "verified_email_required":
     case "student_role_required":
+    case "role_not_active":
       return new HttpError(403, "forbidden", "This action is not permitted");
     case "profile_not_found":
       return new HttpError(404, "profile_not_found", "Target profile was not found");
