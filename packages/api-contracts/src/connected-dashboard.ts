@@ -194,6 +194,7 @@ export const ClassroomAssignmentSchema = z.discriminatedUnion("state", [
 export type ClassroomAssignment = z.infer<typeof ClassroomAssignmentSchema>;
 
 export const AuditActionSchema = z.enum([
+  "admin.bootstrap",
   "profile.onboarded",
   "teacher.approved",
   "teacher.suspended",
