@@ -6,6 +6,7 @@ import {
   AssignmentInsightsResponseSchema,
   AuditEventSchema,
   ClassroomAssignmentSchema,
+  ClassroomAssignmentResponseSchema,
   ClassroomInviteSchema,
   ClassroomRosterResponseSchema,
   ClassroomSchema,
@@ -196,6 +197,20 @@ describe("connected dashboard contracts", () => {
         },
       },
     })).toThrow();
+  });
+
+  it("projects assignment responses without recipient identities", () => {
+    const assignment = {
+      id: "assignment-1", classroomId: "class-1", ownerUid: "teacher-1", jobId: "job-1",
+      recipientSnapshot: [{ uid: "student-1", email: "student@example.com" }],
+      openAt: "2026-08-28T07:00:00.000Z", closeAt: "2026-08-28T09:00:00.000Z", solutions: "after_close",
+      state: "active", testId: "test-1", shareId: "share-1", runnerPath: "/t/abcdefghijklmnop",
+      reconciliation: null, createdAt: timestamp, updatedAt: timestamp,
+    };
+    const projected = ClassroomAssignmentResponseSchema.parse({ assignment });
+    expect(projected.assignment).toMatchObject({ id: "assignment-1", recipientCount: 1 });
+    expect(projected.assignment).not.toHaveProperty("recipientSnapshot");
+    expect(JSON.stringify(projected)).not.toContain("student@example.com");
   });
 
   it("bounds redacted audit changes", () => {

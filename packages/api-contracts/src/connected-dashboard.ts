@@ -202,6 +202,11 @@ export const ClassroomAssignmentSchema = z.discriminatedUnion("state", [
   }
 });
 export type ClassroomAssignment = z.infer<typeof ClassroomAssignmentSchema>;
+export const ClassroomAssignmentProjectionSchema = ClassroomAssignmentSchema.transform(({ recipientSnapshot, ...assignment }) => ({
+  ...assignment,
+  recipientCount: recipientSnapshot.length,
+}));
+export type ClassroomAssignmentProjection = z.infer<typeof ClassroomAssignmentProjectionSchema>;
 
 export const AuditActionSchema = z.enum([
   "admin.bootstrap",
@@ -221,6 +226,7 @@ export const AuditActionSchema = z.enum([
   "invite.redelivered",
   "invite.accepted",
   "assignment.created",
+  "assignment.activated",
   "assignment.failed",
   "assignment.reconciliation_required",
   "assignment.reconciled",
@@ -377,9 +383,14 @@ export const CreateClassroomAssignmentRequestSchema = z.object({
   solutions: AssignmentSolutionsSchema,
 }).strict();
 export type CreateClassroomAssignmentRequest = z.infer<typeof CreateClassroomAssignmentRequestSchema>;
-export const ClassroomAssignmentResponseSchema = z.object({ assignment: ClassroomAssignmentSchema }).strict();
+export const ClassroomAssignmentResponseSchema = z.object({ assignment: ClassroomAssignmentSchema }).strict().transform(({ assignment }) => ({
+  assignment: ClassroomAssignmentProjectionSchema.parse(assignment),
+}));
 export type ClassroomAssignmentResponse = z.infer<typeof ClassroomAssignmentResponseSchema>;
-export const ClassroomAssignmentListResponseSchema = z.object({ assignments: z.array(ClassroomAssignmentSchema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict();
+export const ClassroomAssignmentListResponseSchema = z.object({ assignments: z.array(ClassroomAssignmentSchema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict().transform(({ assignments, nextCursor }) => ({
+  assignments: assignments.map((assignment) => ClassroomAssignmentProjectionSchema.parse(assignment)),
+  nextCursor,
+}));
 export type ClassroomAssignmentListResponse = z.infer<typeof ClassroomAssignmentListResponseSchema>;
 
 export const AssignmentLaunchResponseSchema = z.object({ runnerPath: z.string().startsWith("/").max(512) }).strict();

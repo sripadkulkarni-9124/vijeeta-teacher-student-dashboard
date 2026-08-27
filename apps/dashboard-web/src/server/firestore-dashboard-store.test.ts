@@ -1065,4 +1065,116 @@ describe("FirestoreDashboardStore", () => {
     await expect(store.acceptInvitation(studentPrincipal, input, context())).resolves.toMatchObject({ studentUid: "student-uid" });
     expect([...database.documents.values()].filter((document) => document.action === "invite.accepted")).toHaveLength(1);
   });
+
+  it("snapshots verified active members once, claims one V3 write, and completes after Teacher suspension", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const { invite } = await store.createInvitation(teacherPrincipal, {
+      id: "invite-assignment", classroomId: classroom.id, normalizedEmail: "student@example.com",
+      tokenDigest: "a".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+    await store.acceptInvitation(studentPrincipal, {
+      classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1,
+    }, context());
+
+    const input = { classroomId: classroom.id, idempotencyKey: CORRELATION_ID, request: {
+      jobId: "job-1", openAt: "2026-08-28T07:00:00.000Z", closeAt: "2026-08-28T09:00:00.000Z", solutions: "after_close" as const,
+    } };
+    const first = await store.prepareAssignment(teacherPrincipal, input, context());
+    const replay = await store.prepareAssignment(teacherPrincipal, input, context());
+    expect(first.disposition).toBe("created");
+    expect(replay).toMatchObject({ disposition: "idempotent_replay", assignment: { id: first.assignment.id } });
+    expect(first.assignment.recipientSnapshot).toEqual([{ uid: "student-uid", email: "student@example.com" }]);
+
+    const claimed = await store.claimAssignmentShare(teacherPrincipal, first.assignment.id, context());
+    expect(claimed).toMatchObject({ claimed: true, assignment: { state: "reconciliation_required" } });
+    const competing = await store.claimAssignmentShare(teacherPrincipal, first.assignment.id, context());
+    expect(competing).toMatchObject({ claimed: false, assignment: { state: "reconciliation_required" } });
+    const second = await store.prepareAssignment(teacherPrincipal, {
+      ...input, idempotencyKey: "123e4567-e89b-12d3-a456-426614174001", request: { ...input.request, jobId: "job-2" },
+    }, { ...context(), correlationId: "123e4567-e89b-12d3-a456-426614174001" });
+    const firstPage = await store.listAssignmentsForPrincipalPage(teacherPrincipal, classroom.id, { limit: 1 });
+    const secondPage = await store.listAssignmentsForPrincipalPage(teacherPrincipal, classroom.id, { limit: 1, cursor: firstPage.nextCursor! });
+    expect(new Set([...firstPage.items, ...secondPage.items].map((assignment) => assignment.id))).toEqual(new Set([first.assignment.id, second.assignment.id]));
+    await store.suspendTeacher(adminPrincipal, teacherPrincipal.uid, context("Teacher suspended"));
+    if (!claimed.claimed) throw new Error("expected assignment claim");
+    const completed = await store.completeAssignmentShare(teacherPrincipal, first.assignment.id, claimed.operationId, {
+      kind: "active", shareId: "share-1", testId: "test-1", runnerPath: "/t/abcdefghijklmnop",
+    }, context());
+    expect(completed).toMatchObject({ state: "active", shareId: "share-1", testId: "test-1" });
+    expect([...database.documents.values()].filter((document) => document.action === "assignment.created")).toHaveLength(2);
+    expect([...database.documents.values()].filter((document) => document.action === "assignment.activated")).toHaveLength(1);
+  });
+
+  it("keeps historical Student snapshot authority after membership suspension and denies non-recipients", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const { invite } = await store.createInvitation(teacherPrincipal, {
+      id: "invite-history", classroomId: classroom.id, normalizedEmail: "student@example.com",
+      tokenDigest: "b".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+    await store.acceptInvitation(studentPrincipal, {
+      classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1,
+    }, context());
+    const prepared = await store.prepareAssignment(teacherPrincipal, { classroomId: classroom.id, idempotencyKey: CORRELATION_ID, request: {
+      jobId: "job-1", openAt: "2026-08-28T07:00:00.000Z", closeAt: "2026-08-28T09:00:00.000Z", solutions: "after_close",
+    } }, context());
+    database.documents.set(`classrooms/${classroom.id}/members/student-uid`, {
+      ...database.documents.get(`classrooms/${classroom.id}/members/student-uid`), status: "suspended",
+    });
+    database.documents.set(`studentMemberships/student-uid/classes/${classroom.id}`, {
+      ...database.documents.get(`studentMemberships/student-uid/classes/${classroom.id}`), status: "suspended",
+    });
+    await expect(store.prepareAssignment(teacherPrincipal, { classroomId: classroom.id, idempotencyKey: CORRELATION_ID, request: {
+      jobId: "job-1", openAt: "2026-08-28T07:00:00.000Z", closeAt: "2026-08-28T09:00:00.000Z", solutions: "after_close",
+    } }, context())).resolves.toMatchObject({ disposition: "idempotent_replay", assignment: { id: prepared.assignment.id } });
+    await expect(store.getAssignmentForStudent(studentPrincipal, prepared.assignment.id)).resolves.toMatchObject({ id: prepared.assignment.id });
+    const outsider = principal("outsider-uid", "outsider@example.com", true);
+    await store.onboard(outsider, { role: "student" }, { ...context(), correlationId: "123e4567-e89b-12d3-a456-426614174001" });
+    await expect(store.getAssignmentForStudent(outsider, prepared.assignment.id)).rejects.toMatchObject({ code: "assignment_forbidden" });
+  });
+
+  it("fails global assignment lookup closed for duplicate or physically inconsistent IDs", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    const assignment = {
+      id: "duplicate-assignment", classroomId: "class-a", ownerUid: "teacher-uid", jobId: "job-1",
+      recipientSnapshot: [{ uid: "student-uid", email: "student@example.com" }],
+      openAt: "2026-08-28T07:00:00.000Z", closeAt: "2026-08-28T09:00:00.000Z", solutions: "after_close",
+      state: "creating", testId: null, shareId: null, runnerPath: null, reconciliation: null, createdAt: NOW, updatedAt: NOW,
+    };
+    database.documents.set("classrooms/class-a/assignments/duplicate-assignment", assignment);
+    database.documents.set("classrooms/class-b/assignments/duplicate-assignment", { ...assignment, classroomId: "class-b" });
+    await expect(store.getOwnedAssignment(teacherPrincipal, "duplicate-assignment")).rejects.toMatchObject({ code: "assignment_identity_collision" });
+    database.documents.delete("classrooms/class-b/assignments/duplicate-assignment");
+    database.documents.set("classrooms/class-a/assignments/duplicate-assignment", { ...assignment, classroomId: "wrong-parent" });
+    await expect(store.getOwnedAssignment(teacherPrincipal, "duplicate-assignment")).rejects.toMatchObject({ code: "assignment_identity_collision" });
+  });
+
+  it("rejects empty classrooms, noncanonical schedules, and malformed verified recipient indexes before assignment creation", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const base = { classroomId: classroom.id, idempotencyKey: CORRELATION_ID, request: {
+      jobId: "job-1", openAt: "2026-08-28T07:00:00.000Z", closeAt: "2026-08-28T09:00:00.000Z", solutions: "after_close" as const,
+    } };
+    await expect(store.prepareAssignment(teacherPrincipal, base, context())).rejects.toMatchObject({ code: "assignment_recipients_unavailable" });
+    await expect(store.prepareAssignment(teacherPrincipal, { ...base, request: { ...base.request, openAt: "2026-08-28T07:00:00.500Z" } }, context())).rejects.toThrow();
+
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    database.documents.set(`classrooms/${classroom.id}/members/student-uid`, {
+      classroomId: classroom.id, studentUid: "student-uid", sourceInviteId: "invite-1", status: "active", joinedAt: NOW, updatedAt: NOW,
+    });
+    database.documents.delete(`profileEmailIndex/${createHash("sha256").update("student@example.com").digest("hex")}`);
+    await expect(store.prepareAssignment(teacherPrincipal, base, context())).rejects.toMatchObject({ code: "assignment_recipients_unavailable" });
+    expect(database.created("assignments")).toHaveLength(0);
+  });
 });

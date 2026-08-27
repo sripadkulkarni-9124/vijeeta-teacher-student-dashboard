@@ -142,6 +142,14 @@ export function requireNoQuery(request: Request): void {
   }
 }
 
+export function parseIdempotencyKey(request: Request): string {
+  const key = request.headers.get("idempotency-key");
+  if (key === null || !UUID.test(key)) {
+    throw new HttpError(400, "invalid_request", "A valid idempotency key is required");
+  }
+  return key.toLowerCase();
+}
+
 export function parseRouteId(candidate: unknown): string {
   if (typeof candidate !== "string"
     || candidate.length === 0
@@ -244,6 +252,7 @@ function mapError(error: unknown): HttpError {
     case "active_teacher_required":
     case "bootstrap_identity_mismatch":
     case "classroom_forbidden":
+    case "assignment_forbidden":
     case "verified_email_required":
     case "student_role_required":
       return new HttpError(403, "forbidden", "This action is not permitted");
@@ -251,6 +260,8 @@ function mapError(error: unknown): HttpError {
       return new HttpError(404, "profile_not_found", "Target profile was not found");
     case "classroom_not_found":
       return new HttpError(404, "classroom_not_found", "Classroom was not found");
+    case "assignment_not_found":
+      return new HttpError(404, "assignment_not_found", "Assignment was not found");
     case "invitation_not_found":
       return new HttpError(404, "invitation_not_found", "Invitation was not found");
     case "invitation_invalid":
@@ -266,7 +277,12 @@ function mapError(error: unknown): HttpError {
     case "invitation_transition_invalid":
     case "classroom_archived":
     case "idempotency_conflict":
+    case "assignment_transition_invalid":
       return new HttpError(409, "conflict", "The requested state transition is not available");
+    case "assignment_recipients_unavailable":
+      return new HttpError(409, "assignment_recipients_unavailable", "No eligible classroom recipients are available");
+    case "assignment_identity_collision":
+      return new HttpError(503, "service_unavailable", "The dashboard service is temporarily unavailable", true);
     case "email_index_collision":
     case "email_index_invalid":
     case "verified_email_changed":

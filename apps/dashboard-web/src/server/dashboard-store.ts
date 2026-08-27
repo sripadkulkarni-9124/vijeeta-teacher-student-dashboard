@@ -194,20 +194,43 @@ export interface InvitationRepository {
 export interface CreateAssignmentInput {
   classroomId: string;
   request: CreateClassroomAssignmentRequest;
-  recipientSnapshot: ClassroomAssignment["recipientSnapshot"];
+  idempotencyKey: string;
 }
+
+export type AssignmentPreparationResult =
+  | { disposition: "created"; assignment: ClassroomAssignment }
+  | { disposition: "idempotent_replay"; assignment: ClassroomAssignment };
+
+export type AssignmentCompletion =
+  | { kind: "active"; shareId: string; testId: string; runnerPath: string }
+  | { kind: "failed"; failureCode: string }
+  | { kind: "reconciliation_required"; reason: "timeout" | "disconnect" | "malformed_success" | "unknown" };
 
 export interface AssignmentRepository {
   getAssignment(classroomId: string, assignmentId: string): Promise<ClassroomAssignment | null>;
-  createAssignment(
+  prepareAssignment(
     principal: VerifiedPrincipal,
     input: CreateAssignmentInput,
     context: MutationContext,
+  ): Promise<AssignmentPreparationResult>;
+  claimAssignmentShare(principal: VerifiedPrincipal, assignmentId: string, context: MutationContext): Promise<
+    { claimed: true; operationId: string; assignment: ClassroomAssignment }
+    | { claimed: false; assignment: ClassroomAssignment }
+  >;
+  completeAssignmentShare(
+    principal: VerifiedPrincipal,
+    assignmentId: string,
+    operationId: string,
+    completion: AssignmentCompletion,
+    context: MutationContext,
   ): Promise<ClassroomAssignment>;
-  listAssignmentsForPrincipal(
+  listAssignmentsForPrincipalPage(
     principal: VerifiedPrincipal,
     classroomId: string,
-  ): Promise<ClassroomAssignment[]>;
+    page: PaginationRequest,
+  ): Promise<Page<ClassroomAssignment>>;
+  getOwnedAssignment(principal: VerifiedPrincipal, assignmentId: string): Promise<ClassroomAssignment | null>;
+  getAssignmentForStudent(principal: VerifiedPrincipal, assignmentId: string): Promise<ClassroomAssignment | null>;
 }
 
 export interface AuditRepository {
@@ -232,6 +255,11 @@ export type DashboardStoreErrorCode =
   | "rate_limited"
   | "student_role_required"
   | "membership_projection_invalid"
+  | "assignment_not_found"
+  | "assignment_forbidden"
+  | "assignment_transition_invalid"
+  | "assignment_identity_collision"
+  | "assignment_recipients_unavailable"
   | "pagination_cursor_invalid"
   | "profile_exists"
   | "profile_not_found"
