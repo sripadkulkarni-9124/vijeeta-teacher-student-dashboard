@@ -28,4 +28,15 @@ describe("production fixture boundary", () => {
     expect(dockerfile).not.toContain("COPY packages/product-fixtures packages/product-fixtures");
     expect(dockerfile).toContain('delete pkg.dependencies["@vijeeta/product-fixtures"]');
   });
+
+  it("pins the cloud image build to the approved public Firebase project", () => {
+    const cloudBuild = readFileSync(resolve(appRoot, "../../cloudbuild.dashboard.yaml"), "utf8");
+    expect(cloudBuild).toContain("--tag=${_IMAGE}");
+    expect(cloudBuild).toContain("NEXT_PUBLIC_DASHBOARD_MODE=v3-proxy");
+    expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_API_KEY=${_FIREBASE_API_KEY}");
+    expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=neetcompanion-50b1f.firebaseapp.com");
+    expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_PROJECT_ID=neetcompanion-50b1f");
+    expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_APP_ID=1:840759107103:web:84391539f65c7aa4abff2a");
+    expect(cloudBuild).not.toContain("latest");
+  });
 });

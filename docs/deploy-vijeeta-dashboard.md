@@ -133,6 +133,15 @@ Local, non-cloud checks:
 
 The Docker build requires package-registry access for the image builder's frozen install; this is an image-build dependency, not a permission to run cloud commands. If dependencies are unavailable offline, report that as a build prerequisite rather than weakening the lockfile or using an unfrozen install. Export the approved public API key in `NEXT_PUBLIC_FIREBASE_API_KEY` only in the local build environment or CI secret store; never replace the variable reference above with a literal key in source, docs, image labels, or command history.
 
+After the resource/IAM approval is recorded, the immutable cloud build uses the checked-in `cloudbuild.dashboard.yaml` recipe. Both substitutions are mandatory; `_IMAGE` must be the exact Artifact Registry path ending in the full source Git SHA, never `latest`:
+
+    gcloud builds submit . \
+      --project=neetcompanion-50b1f \
+      --config=cloudbuild.dashboard.yaml \
+      --substitutions=_IMAGE=asia-south1-docker.pkg.dev/neetcompanion-50b1f/cloud-run-source-deploy/vijeeta-dashboard:<FULL_GIT_SHA>,_FIREBASE_API_KEY="${NEXT_PUBLIC_FIREBASE_API_KEY}"
+
+This command is a cloud write because it creates build records and pushes the image. Do not run it during read-only preflight or before the explicit build approval.
+
 ## Approval-gated rollout
 
 1. **Read-only preflight:** confirm the project, existing Artifact Registry repository, Cloud Run API availability, Firestore location support, and current service list. Save the results. Do not create resources or alter an existing service.
