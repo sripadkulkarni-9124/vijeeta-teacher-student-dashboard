@@ -28,12 +28,18 @@ describe("V3AssignmentAdapter", () => {
       expect(init.credentials).toBe("omit");
       expect(init.headers).toEqual({ Authorization: `Bearer ${token}`, Accept: "application/json" });
       return json({
-        jobs: [{ id: "JOB-1", title: "Mechanics", status: "final", by: "teacher@example.com", export: { answers: [] } }],
-        page: 2, page_size: 25, total: 1, pages: 1,
+        jobs: [
+          { id: "JOB-1", title: "Mechanics", status: "final", by: "teacher@example.com", export: { answers: [] } },
+          { id: "JOB-2", title: "Optics", status: "revising", by: "teacher@example.com" },
+        ],
+        page: 2, page_size: 25, total: 2, pages: 1,
       });
     });
     const result = await adapter(fetchImpl).listOwnedJobs({ page: 2, pageSize: 25 }, token);
-    expect(result).toEqual({ jobs: [{ id: "JOB-1", title: "Mechanics", status: "final" }], page: 2, pageSize: 25, total: 1, pages: 1 });
+    expect(result).toEqual({ jobs: [
+      { id: "JOB-1", title: "Mechanics", status: "final" },
+      { id: "JOB-2", title: "Optics", status: "revising" },
+    ], page: 2, pageSize: 25, total: 2, pages: 1 });
     expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
@@ -43,7 +49,7 @@ describe("V3AssignmentAdapter", () => {
       calls.push({ input, init });
       return json({
         ok: true,
-        share: { id: "SH-1", test_id: "shared-job-1", token: "raw-secret", emails: ["student@example.com"], readout: { resolved: 1, batches: 0, warnings: ["ready"] } },
+        share: { id: "SH-1", job_id: "JOB-1", test_id: "shared-job-1", token: "raw-secret", emails: ["student@example.com"], readout: { resolved: 1, batches: 0, warnings: ["ready"] } },
         no_email: [],
         link: "https://v3.example.test/t/opaque-capability",
         app_url: "https://example.invalid",
@@ -53,7 +59,7 @@ describe("V3AssignmentAdapter", () => {
       jobId: "JOB-1",
       recipientEmails: [" Student@Example.com ", "student@example.com"],
       openAt: "2026-08-28T00:00:00.000Z",
-      closeAt: "2026-08-28T01:00:00.500Z",
+      closeAt: "2026-08-28T01:00:00.000Z",
       solutions: "after_close",
     }, token);
 
@@ -63,7 +69,7 @@ describe("V3AssignmentAdapter", () => {
     expect(calls[0]?.init.headers).toEqual({ Authorization: `Bearer ${token}`, Accept: "application/json", "Content-Type": "application/json" });
     expect(JSON.parse(String(calls[0]?.init.body))).toEqual({
       emails: ["student@example.com"],
-      window: { open: 1_787_875_200, close: 1_787_878_800.5 },
+      window: { open: 1_787_875_200, close: 1_787_878_800 },
       solutions: "after_due",
     });
     expect(result).toEqual({
@@ -109,8 +115,45 @@ describe("V3AssignmentAdapter", () => {
     "https://169.254.169.254",
     "https://10.1.2.3",
     "https://service.internal",
+    "https://[::]",
+    "https://[::1]",
+    "https://[fe80::1]",
+    "https://[febf::1]",
+    "https://[fc00::1]",
+    "https://[fdff::1]",
+    "https://[ff02::1]",
+    "https://[::ffff:127.0.0.1]",
+    "https://[::ffff:10.1.2.3]",
+    "https://[::ffff:169.254.1.2]",
   ])("rejects unsafe V3 base URL %s", (baseUrl) => {
     expect(() => new V3AssignmentAdapter({ baseUrl: new URL(baseUrl), fetchImpl: vi.fn() })).toThrow(V3AdapterError);
+  });
+
+  it.each(["https://[2606:4700:4700::1111]", "https://[2001:4860:4860::8888]"])("allows public IPv6 V3 origin %s", (baseUrl) => {
+    expect(() => new V3AssignmentAdapter({ baseUrl: new URL(baseUrl), fetchImpl: vi.fn() })).not.toThrow();
+  });
+
+  it("fails an otherwise valid share response whose returned job id mismatches the route", async () => {
+    const instance = adapter(async () => json({
+      ok: true,
+      share: { id: "SH-1", job_id: "JOB-OTHER", test_id: "shared-job-1", readout: { resolved: 1, batches: 0, warnings: [] } },
+      link: "https://v3.example.test/t/opaque-capability",
+    }));
+    await expect(instance.share({ jobId: "JOB-1", recipientEmails: ["student@example.com"], openAt: "2026-08-28T00:00:00Z", closeAt: null, solutions: "never" }, token)).rejects.toMatchObject({ kind: "ambiguous_outcome" });
+  });
+
+  it.each([
+    "2026-08-28",
+    "2026-08-28 00:00:00Z",
+    "2026-08-28T00:00:00",
+    "2026-08-28T00:00:00.500Z",
+    "2026-08-28T00:00:00-00:00",
+    "2026-02-30T00:00:00Z",
+    "9999-12-31T23:59:59Z",
+  ])("rejects noncanonical or unbounded schedule %s before POST", async (openAt) => {
+    const fetchImpl = vi.fn();
+    await expect(adapter(fetchImpl).share({ jobId: "JOB-1", recipientEmails: ["student@example.com"], openAt, closeAt: null, solutions: "never" }, token)).rejects.toMatchObject({ kind: "invalid_input" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -121,7 +164,7 @@ describe("V3AssignmentAdapter", () => {
     "https://v3.example.test/t/%2e%2e/admin",
     "https://v3.example.test/v3/test/shared-job-1",
   ])("rejects unsafe runner link %s as an ambiguous share outcome", async (link) => {
-    const instance = adapter(async () => json({ ok: true, share: { id: "SH-1", test_id: "shared-job-1", readout: { resolved: 1, batches: 0, warnings: [] } }, no_email: [], link, app_url: null }));
+    const instance = adapter(async () => json({ ok: true, share: { id: "SH-1", job_id: "JOB-1", test_id: "shared-job-1", readout: { resolved: 1, batches: 0, warnings: [] } }, no_email: [], link, app_url: null }));
     await expect(instance.share({ jobId: "JOB-1", recipientEmails: ["student@example.com"], openAt: "2026-08-28T00:00:00.000Z", closeAt: null, solutions: "on_submit" }, token)).rejects.toMatchObject({ kind: "ambiguous_outcome" });
   });
 
@@ -158,7 +201,7 @@ describe("V3AssignmentAdapter", () => {
   it("treats an explicitly unsuccessful 2xx share body as ambiguous", async () => {
     const fetchImpl = vi.fn(async () => json({
       ok: false,
-      share: { id: "SH-1", test_id: "shared-job-1", readout: { resolved: 1, batches: 0, warnings: [] } },
+      share: { id: "SH-1", job_id: "JOB-1", test_id: "shared-job-1", readout: { resolved: 1, batches: 0, warnings: [] } },
       link: "https://v3.example.test/t/opaque-capability",
     }));
     await expect(adapter(fetchImpl).share({ jobId: "JOB-1", recipientEmails: ["student@example.com"], openAt: "2026-08-28T00:00:00.000Z", closeAt: null, solutions: "never" }, token)).rejects.toMatchObject({ kind: "ambiguous_outcome" });

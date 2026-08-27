@@ -20,6 +20,7 @@ import {
   V3StudentTestListSchema,
   V3StudentTestReadSchema,
   V3StudentTestReviewSchema,
+  V3ScheduleTimestampSchema,
   VerifiedPrincipalSchema,
 } from "./connected-dashboard";
 
@@ -319,13 +320,19 @@ describe("connected dashboard contracts", () => {
 
   it("strictly projects bounded V3 assignment DTOs", () => {
     const jobs = V3OwnedJobsSchema.parse({
-      jobs: [{ id: "JOB-1", title: "Mechanics", status: "final" }],
+      jobs: [
+        { id: "JOB-1", title: "Mechanics", status: "final" },
+        { id: "JOB-2", title: "Optics", status: "revising" },
+      ],
       page: 1,
       pageSize: 50,
-      total: 1,
+      total: 2,
       pages: 1,
     });
     expect(jobs.jobs[0]?.id).toBe("JOB-1");
+    expect(jobs.jobs[1]?.status).toBe("revising");
+    expect(() => V3OwnedJobsSchema.parse({ ...jobs, jobs: [{ id: "JOB-3", title: "Invented", status: "built" }] })).toThrow();
+    expect(() => V3OwnedJobsSchema.parse({ ...jobs, jobs: [{ id: "JOB-3", title: "Invented", status: "trashed" }] })).toThrow();
     expect(() => V3OwnedJobsSchema.parse({ ...jobs, key: "legacy-admin" })).toThrow();
 
     const shared = V3ShareResultSchema.parse({
@@ -336,6 +343,23 @@ describe("connected dashboard contracts", () => {
     });
     expect(shared.runnerPath).toBe("/t/opaque-capability");
     expect(() => V3ShareResultSchema.parse({ ...shared, token: "opaque-capability" })).toThrow();
+  });
+
+  it("accepts only canonical integral RFC3339 V3 schedule timestamps", () => {
+    expect(V3ScheduleTimestampSchema.parse("2026-08-28T00:00:00Z")).toBe("2026-08-28T00:00:00Z");
+    expect(V3ScheduleTimestampSchema.parse("2026-08-28T05:30:00+05:30")).toBe("2026-08-28T05:30:00+05:30");
+    expect(V3ScheduleTimestampSchema.parse("2026-08-28T00:00:00.000Z")).toBe("2026-08-28T00:00:00.000Z");
+    for (const invalid of [
+      "2026-08-28",
+      "2026-08-28 00:00:00Z",
+      "2026-08-28t00:00:00z",
+      "2026-08-28T00:00:00",
+      "2026-08-28T00:00:00.500Z",
+      "2026-08-28T00:00:00+0530",
+      "2026-08-28T00:00:00-00:00",
+      "2026-02-30T00:00:00Z",
+      "9999-12-31T23:59:59Z",
+    ]) expect(() => V3ScheduleTimestampSchema.parse(invalid)).toThrow();
   });
 
   it("keeps V3 insight DTOs free of email, answers, and raw attempt payloads", () => {

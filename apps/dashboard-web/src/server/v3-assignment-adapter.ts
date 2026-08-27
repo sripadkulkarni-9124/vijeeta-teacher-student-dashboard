@@ -1,5 +1,6 @@
 import {
   V3OwnedJobsSchema,
+  V3ScheduleTimestampSchema,
   V3ShareResultSchema,
   type AssignmentSolutions,
   type V3OwnedJobs,
@@ -56,12 +57,50 @@ function privateIpv4(hostname: string): boolean {
     || (a === 192 && b === 168) || a >= 224;
 }
 
+function ipv6Hextets(address: string): number[] | null {
+  const halves = address.split("::");
+  if (halves.length > 2) return null;
+  const parse = (part: string): number[] | null => {
+    if (!part) return [];
+    const pieces = part.split(":");
+    if (pieces.some((piece) => !/^[0-9a-f]{1,4}$/i.test(piece))) return null;
+    return pieces.map((piece) => Number.parseInt(piece, 16));
+  };
+  const left = parse(halves[0] ?? "");
+  const right = parse(halves[1] ?? "");
+  if (!left || !right) return null;
+  if (halves.length === 1) return left.length === 8 ? left : null;
+  const missing = 8 - left.length - right.length;
+  return missing >= 1 ? [...left, ...Array.from({ length: missing }, () => 0), ...right] : null;
+}
+
+function unsafeIpv6(hostname: string): boolean {
+  const address = hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
+  if (!address.includes(":")) return false;
+  const words = ipv6Hextets(address);
+  if (!words) return true;
+  const first = words[0] ?? 0;
+  const unspecified = words.every((word) => word === 0);
+  const loopback = words.slice(0, 7).every((word) => word === 0) && words[7] === 1;
+  if (unspecified || loopback) return true;
+  if ((first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0 || (first & 0xfe00) === 0xfc00 || (first & 0xff00) === 0xff00) return true;
+  const mapped = words.slice(0, 5).every((word) => word === 0) && words[5] === 0xffff;
+  const compatible = words.slice(0, 6).every((word) => word === 0);
+  if (mapped || compatible) {
+    const high = words[6] ?? 0;
+    const low = words[7] ?? 0;
+    const ipv4 = `${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`;
+    return privateIpv4(ipv4);
+  }
+  return false;
+}
+
 export function validateV3Origin(value: URL): URL {
   const url = new URL(value.toString());
   const host = url.hostname.toLowerCase().replace(/\.$/, "");
   const unsafeHost = host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")
     || host.endsWith(".internal") || host === "::1" || host === "[::1]" || host.startsWith("fe80:")
-    || host === "0.0.0.0" || privateIpv4(host);
+    || host === "0.0.0.0" || privateIpv4(host) || unsafeIpv6(host);
   if (url.protocol !== "https:" || url.username || url.password || (url.port && url.port !== "443") || url.pathname !== "/" || url.search || url.hash || unsafeHost) {
     throw new V3AdapterError("invalid_input", "invalid_v3_origin", false);
   }
@@ -94,9 +133,9 @@ function normalizedEmails(values: readonly string[]): string[] {
 }
 
 function epochSeconds(value: string, label: string): number {
-  const millis = Date.parse(value);
-  if (!Number.isFinite(millis)) throw new V3AdapterError("invalid_input", `invalid_${label}`, false);
-  return millis / 1000;
+  const parsed = V3ScheduleTimestampSchema.safeParse(value);
+  if (!parsed.success) throw new V3AdapterError("invalid_input", `invalid_${label}`, false);
+  return Date.parse(parsed.data) / 1000;
 }
 
 export function validateRunnerPath(value: unknown, origin: URL): string {
@@ -223,7 +262,9 @@ export class V3AssignmentAdapter {
         const job = record(raw);
         return { id: job.id, title: job.title, status: job.status, ...(job.grade !== undefined ? { grade: job.grade } : {}), ...(job.created !== undefined && job.created !== null ? { createdAt: job.created } : {}), ...(job.updated !== undefined && job.updated !== null ? { updatedAt: job.updated } : {}) };
       }) : payload.jobs;
-      return V3OwnedJobsSchema.parse({ jobs, page: payload.page, pageSize: payload.page_size, total: payload.total, pages: payload.pages });
+      const projected = V3OwnedJobsSchema.parse({ jobs, page: payload.page, pageSize: payload.page_size, total: payload.total, pages: payload.pages });
+      if (projected.page !== input.page || projected.pageSize !== input.pageSize) throw new Error("pagination mismatch");
+      return projected;
     } catch { throw new V3AdapterError("unavailable", "malformed_response", false); }
   }
 
@@ -242,6 +283,7 @@ export class V3AssignmentAdapter {
       const payload = record(rawPayload);
       if (payload.ok !== true) throw new V3AdapterError("invalid_input", "malformed_projection", false);
       const share = record(payload.share);
+      if (share.job_id !== jobId) throw new V3AdapterError("invalid_input", "mismatched_job_id", false);
       const readout = record(share.readout);
       const warnings = Array.isArray(readout.warnings) ? readout.warnings.slice(0, 20) : [];
       return V3ShareResultSchema.parse({

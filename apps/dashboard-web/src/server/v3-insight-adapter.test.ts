@@ -41,6 +41,15 @@ describe("V3InsightAdapter", () => {
     expect(JSON.stringify(result)).not.toContain("secret");
   });
 
+  it("rejects owner results whose returned share id mismatches the requested route", async () => {
+    const instance = adapter(async () => json({
+      share: { id: "SH-OTHER", test_id: "shared-job-1" },
+      funnel: { shared: 0, attempted: 0, pending: 0 },
+      batch: {}, students: [],
+    }));
+    await expect(instance.shareResults("SH-1", token)).rejects.toMatchObject({ kind: "unavailable" });
+  });
+
   it("binds the exact snapshotted Student UID into the individual analysis path", async () => {
     const fetchImpl = vi.fn(async (input: string) => {
       expect(input).toBe("https://v3.example.test/v3/paperdesk/shares/SH-1/student/firebase-uid-1/analysis");
@@ -49,6 +58,36 @@ describe("V3InsightAdapter", () => {
     const result = await adapter(fetchImpl).studentAnalysis("SH-1", "firebase-uid-1", token);
     expect(result).toEqual({ uid: "firebase-uid-1", testId: "shared-job-1", available: true, title: "Mechanics", score: 42, maxScore: 100, percentile: 80, deltaFromPrevious: 5 });
     expect(JSON.stringify(result)).not.toContain("answers");
+  });
+
+  it.each([
+    { share_id: "SH-OTHER", user_id: "firebase-uid-1" },
+    { share_id: "SH-1", user_id: "firebase-uid-other" },
+  ])("rejects individual analysis identity mismatch %o", async (identity) => {
+    const instance = adapter(async () => json({
+      ...identity,
+      test_id: "shared-job-1", title: "Mechanics", score: 42, max: 100,
+      percentile: { percentile: 80 }, delta_last: 5,
+    }));
+    await expect(instance.studentAnalysis("SH-1", "firebase-uid-1", token)).rejects.toMatchObject({ kind: "unavailable" });
+  });
+
+  it.each([
+    { method: "test", responseId: "shared-other" },
+    { method: "review", responseId: "shared-other" },
+    { method: "analysis", responseId: "shared-other" },
+  ])("rejects Student $method response whose test id mismatches the route", async ({ method, responseId }) => {
+    const instance = adapter(async () => method === "test"
+      ? json({ test_id: responseId, title: "Mechanics", kind: "main", duration_min: 180, sections: [] })
+      : method === "review"
+        ? json({ test_id: responseId, score: 42, max: 100, review: [] })
+        : json({ test_id: responseId, title: "Mechanics", score: 42, max: 100, percentile: { percentile: 80 }, delta_last: 5 }));
+    const call = method === "test"
+      ? instance.studentTest("shared-job-1", "firebase-uid-1", token)
+      : method === "review"
+        ? instance.studentReview("shared-job-1", "firebase-uid-1", token)
+        : instance.studentTestAnalysis("shared-job-1", "firebase-uid-1", token);
+    await expect(call).rejects.toMatchObject({ kind: "unavailable" });
   });
 
   it("binds every self-scoped user_id query to the trusted UID", async () => {
@@ -86,6 +125,23 @@ describe("V3InsightAdapter", () => {
     expect(tests.tests[0]).toEqual({ testId: "shared-job-1", title: "Mechanics", teacherLabel: "teacher", kind: "main", sharedAtEpochSeconds: 1_777_507_200, state: "open", score: null, maxScore: null, runnerPath: "/t/opaque-capability" });
     expect(await instance.studentLaunch("shared-job-1", "firebase-uid-1", token)).toEqual({ testId: "shared-job-1", runnerPath: "/t/opaque-capability" });
     expect(await instance.studentTest("shared-job-1", "firebase-uid-1", token)).toEqual({ testId: "shared-job-1", title: "Mechanics", kind: "main", durationMinutes: 180, sectionCount: 1, window: { open: 1_777_507_200, close: null } });
+  });
+
+  it.each(["test-list", "test-detail", "attempt-row"])("rejects a mismatched Student UID echoed by $method", async (method) => {
+    const instance = adapter(async () => {
+      if (method === "test-list") return json({
+        tests: [{ test_id: "shared-job-1", user_id: "firebase-uid-other", title: "Mechanics", teacher: "teacher@example.com", kind: "main", shared: 1_777_507_200, state: "open", score: null, max: null }],
+        by_teacher: {}, empty: null,
+      });
+      if (method === "test-detail") return json({ test_id: "shared-job-1", user_id: "firebase-uid-other", title: "Mechanics", kind: "main", duration_min: 180, sections: [] });
+      return json({ attempts: [{ test_id: "shared-job-1", user_id: "firebase-uid-other", title: "Mechanics", score: 42, max: 100, ts: "2026-08-28T00:00:00.000Z" }] });
+    });
+    const call = method === "test-list"
+      ? instance.studentTests("firebase-uid-1", token)
+      : method === "test-detail"
+        ? instance.studentTest("shared-job-1", "firebase-uid-1", token)
+        : instance.studentAttempts("firebase-uid-1", token);
+    await expect(call).rejects.toMatchObject({ kind: "unavailable" });
   });
 
   it.each(["../SH", "SH%2fother", "SH?key=x", ".", ".."])("rejects unsafe share id %s before fetch", async (shareId) => {

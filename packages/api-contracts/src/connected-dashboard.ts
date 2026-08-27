@@ -436,6 +436,32 @@ export type ReconcileAssignmentRequest = z.infer<typeof ReconcileAssignmentReque
 const V3BoundedLabelSchema = z.string().trim().min(1).max(240);
 const V3EpochSecondsSchema = z.number().finite().nonnegative().max(10_000_000_000);
 const V3NullableScoreSchema = z.number().finite().min(-1_000_000).max(1_000_000).nullable();
+const V3_SCHEDULE_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.000)?(Z|([+-])(\d{2}):(\d{2}))$/;
+export const V3ScheduleTimestampSchema = z.string().max(64).superRefine((value, context) => {
+  const match = V3_SCHEDULE_PATTERN.exec(value);
+  if (!match) {
+    context.addIssue({ code: "custom", message: "Expected a canonical integral RFC3339 timestamp" });
+    return;
+  }
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const hour = Number(match[4]);
+  const minute = Number(match[5]);
+  const second = Number(match[6]);
+  const offsetHour = Number(match[9] ?? 0);
+  const offsetMinute = Number(match[10] ?? 0);
+  const unknownOffset = match[7] === "-00:00";
+  const daysInMonth = month >= 1 && month <= 12 ? new Date(Date.UTC(year, month, 0)).getUTCDate() : 0;
+  const validFields = year >= 1970 && month >= 1 && month <= 12 && day >= 1 && day <= daysInMonth
+    && hour <= 23 && minute <= 59 && second <= 59
+    && !unknownOffset && offsetHour <= 14 && offsetMinute <= 59 && (offsetHour < 14 || offsetMinute === 0);
+  const epochSeconds = Date.parse(value) / 1000;
+  if (!validFields || !Number.isInteger(epochSeconds) || epochSeconds < 0 || epochSeconds > 10_000_000_000) {
+    context.addIssue({ code: "custom", message: "Timestamp is invalid or outside the supported V3 schedule range" });
+  }
+});
+export type V3ScheduleTimestamp = z.infer<typeof V3ScheduleTimestampSchema>;
 const V3RunnerPathSchema = z.string().min(4).max(512).refine(
   (path) => /^\/t\/[A-Za-z0-9_-]{16,256}$/.test(path),
   "Runner path must be a safe V3 test capability path",
@@ -444,7 +470,7 @@ const V3RunnerPathSchema = z.string().min(4).max(512).refine(
 export const V3OwnedJobSchema = z.object({
   id: IdentifierSchema,
   title: V3BoundedLabelSchema,
-  status: z.enum(["draft", "built", "in_review", "final", "trashed"]),
+  status: z.enum(["draft", "in_review", "revising", "final"]),
   grade: z.union([z.string().trim().max(32), z.number().finite()]).optional(),
   createdAt: z.union([IsoTimestampSchema, V3EpochSecondsSchema]).optional(),
   updatedAt: z.union([IsoTimestampSchema, V3EpochSecondsSchema]).optional(),

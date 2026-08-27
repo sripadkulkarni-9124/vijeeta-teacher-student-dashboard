@@ -42,6 +42,16 @@ function integer(value: unknown): number | null {
 
 function safeUid(uid: string): string { return validateV3Id(uid, "user_id"); }
 
+function requireRouteId(actual: unknown, expected: string): void {
+  if (actual !== expected) throw new V3AdapterError("unavailable", "mismatched_upstream_identifier", false);
+}
+
+function requireOptionalRouteId(payload: Record<string, unknown>, names: readonly string[], expected: string): void {
+  for (const name of names) {
+    if (payload[name] !== undefined) requireRouteId(payload[name], expected);
+  }
+}
+
 export class V3InsightAdapter {
   private readonly transport: V3Transport;
 
@@ -52,6 +62,7 @@ export class V3InsightAdapter {
     const payload = record(await this.transport.json(`/v3/paperdesk/shares/${shareId}/results`, "GET", bearer, undefined, "read"));
     try {
       const share = record(payload.share);
+      requireRouteId(share.id, shareId);
       const funnel = record(payload.funnel);
       const batch = optionalRecord(payload.batch);
       const students = Array.isArray(payload.students) ? payload.students.map((raw) => {
@@ -82,15 +93,20 @@ export class V3InsightAdapter {
     const shareId = validateV3Id(shareIdInput, "share_id");
     const uid = safeUid(studentUidInput);
     const payload = await this.transport.json(`/v3/paperdesk/shares/${shareId}/student/${uid}/analysis`, "GET", bearer, undefined, "read");
-    return this.projectTestInsight(payload, uid);
+    const projectedPayload = record(payload);
+    requireOptionalRouteId(projectedPayload, ["share_id", "shareId"], shareId);
+    requireOptionalRouteId(projectedPayload, ["uid", "user_id", "userId"], uid);
+    return this.projectTestInsight(projectedPayload, uid);
   }
 
   async studentTests(studentUid: string, bearer: string): Promise<V3StudentTestList> {
-    safeUid(studentUid);
+    const uid = safeUid(studentUid);
     const payload = record(await this.transport.json("/v3/shared/tests", "GET", bearer, undefined, "read"));
     try {
+      requireOptionalRouteId(payload, ["uid", "user_id", "userId"], uid);
       const tests = Array.isArray(payload.tests) ? payload.tests.map((raw) => {
         const test = record(raw);
+        requireOptionalRouteId(test, ["uid", "user_id", "userId"], uid);
         const teacher = typeof test.teacher === "string" ? test.teacher.split("@", 1)[0]?.trim() : null;
         return {
           testId: test.test_id,
@@ -121,9 +137,11 @@ export class V3InsightAdapter {
 
   async studentTest(testIdInput: string, studentUid: string, bearer: string): Promise<V3StudentTestRead> {
     const testId = validateV3Id(testIdInput, "test_id");
-    safeUid(studentUid);
+    const uid = safeUid(studentUid);
     const payload = record(await this.transport.json(`/v3/test/${testId}`, "GET", bearer, undefined, "read"));
     try {
+      requireRouteId(payload.test_id, testId);
+      requireOptionalRouteId(payload, ["uid", "user_id", "userId"], uid);
       const window = payload.window === undefined ? null : record(payload.window);
       return V3StudentTestReadSchema.parse({
         testId: payload.test_id,
@@ -140,8 +158,10 @@ export class V3InsightAdapter {
     const uid = safeUid(studentUidInput);
     const payload = record(await this.transport.json(`/v3/test/attempts?user_id=${encodeURIComponent(uid)}`, "GET", bearer, undefined, "read"));
     try {
+      requireOptionalRouteId(payload, ["uid", "user_id", "userId"], uid);
       const attempts = Array.isArray(payload.attempts) ? payload.attempts.slice(0, 500).map((raw) => {
         const attempt = record(raw);
+        requireOptionalRouteId(attempt, ["uid", "user_id", "userId"], uid);
         let attemptedAt: string | null = null;
         if (typeof attempt.ts === "string") attemptedAt = attempt.ts;
         else if (typeof attempt.ts === "number" && Number.isFinite(attempt.ts)) attemptedAt = new Date(attempt.ts * 1000).toISOString();
@@ -156,6 +176,8 @@ export class V3InsightAdapter {
     const uid = safeUid(studentUidInput);
     const payload = record(await this.transport.json(`/v3/test/${testId}/review?user_id=${encodeURIComponent(uid)}`, "GET", bearer, undefined, "read"));
     try {
+      requireRouteId(payload.test_id, testId);
+      requireOptionalRouteId(payload, ["uid", "user_id", "userId"], uid);
       return V3StudentTestReviewSchema.parse({
         testId: payload.test_id,
         available: payload.locked !== true,
@@ -171,13 +193,17 @@ export class V3InsightAdapter {
     const testId = validateV3Id(testIdInput, "test_id");
     const uid = safeUid(studentUidInput);
     const payload = await this.transport.json(`/v3/test/${testId}/analysis?user_id=${encodeURIComponent(uid)}`, "GET", bearer, undefined, "read");
-    return this.projectTestInsight(payload, uid);
+    const projectedPayload = record(payload);
+    requireRouteId(projectedPayload.test_id, testId);
+    requireOptionalRouteId(projectedPayload, ["uid", "user_id", "userId"], uid);
+    return this.projectTestInsight(projectedPayload, uid);
   }
 
   async studentOverall(studentUidInput: string, bearer: string): Promise<V3StudentOverallInsight> {
     const uid = safeUid(studentUidInput);
     const payload = record(await this.transport.json(`/v3/analysis/overall?user_id=${encodeURIComponent(uid)}`, "GET", bearer, undefined, "read"));
     try {
+      requireOptionalRouteId(payload, ["uid", "user_id", "userId"], uid);
       const readiness = optionalRecord(payload.readiness);
       const growth = optionalRecord(payload.growth);
       return V3StudentOverallInsightSchema.parse({
