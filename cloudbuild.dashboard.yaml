@@ -1,5 +1,17 @@
 steps:
   - name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env:
+      - CANDIDATE_IMAGE=${_IMAGE}
+    args:
+      - -ceu
+      - |
+        prefix='asia-south1-docker.pkg.dev/neetcompanion-50b1f/cloud-run-source-deploy/vijeeta-dashboard:'
+        image="$${CANDIDATE_IMAGE}"
+        [[ "$${image}" == "$${prefix}"* ]]
+        tag="$${image#"$${prefix}"}"
+        [[ "$${tag}" =~ ^[0-9a-f]{40}$$ ]]
+  - name: gcr.io/cloud-builders/docker
     args:
       - build
       - --file=apps/dashboard-web/Dockerfile
