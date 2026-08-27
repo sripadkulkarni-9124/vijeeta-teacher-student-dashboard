@@ -342,6 +342,9 @@ export class DashboardStore {
         if (!isStudentEligible(assignment, state, STUDENT_ID)) {
           throw new DashboardStoreError("Assignment not found", "not_found");
         }
+        if (assignment.available === false) {
+          throw new DashboardStoreError("Assignment is not available yet", "conflict");
+        }
         const test = state.tests.find((entry) => entry.id === assignment.testId);
         if (!test) throw new DashboardStoreError("Test not found", "not_found");
         if (test.questions.length === 0) throw new DashboardStoreError("Test has no questions", "conflict");

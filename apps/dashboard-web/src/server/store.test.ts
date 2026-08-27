@@ -170,6 +170,8 @@ describe("DashboardStore", () => {
     const store = new DashboardStore({ filePath: await tempStatePath() });
     await expect(store.dispatch({ type: "start-attempt", assignmentId: "assignment-does-not-exist" }))
       .rejects.toMatchObject({ code: "not_found" });
+    await expect(store.dispatch({ type: "start-attempt", assignmentId: "assignment-units-revision-03" }))
+      .rejects.toMatchObject({ code: "conflict" });
     const started = await store.dispatch({ type: "start-attempt", assignmentId: "assignment-motion-foundations-02" });
     if (started.type !== "attempt-started") throw new Error("expected attempt");
 
