@@ -92,6 +92,7 @@ describe("DashboardStore", () => {
     });
 
     expect(assignment.type).toBe("assignment-created");
+    if (assignment.type === "assignment-created") expect(assignment.assignment.available).toBe(true);
     const persisted = JSON.parse(await readFile(filePath, "utf8"));
     expect(persisted.quickTests).toHaveLength(2);
     expect(persisted.assignments.at(-1).recipients).toEqual([
@@ -239,11 +240,29 @@ describe("DashboardStore", () => {
     if (!question) throw new Error("expected generated question");
     await store.dispatch({ type: "submit-attempt", attemptId: started.attempt.id, responses: [{ questionId: question.id, selectedChoiceId: question.choices[0].id }] });
 
-    expect((await store.snapshot("student")).results.some((result) => result.attemptId === started.attempt.id)).toBe(false);
+    const beforeRelease = await store.snapshot("student");
+    expect(beforeRelease.results.some((result) => result.attemptId === started.attempt.id)).toBe(false);
+    expect(beforeRelease.insights.personal.attempted).toBe(2);
     currentTime = "2026-08-28T12:00:00.000Z";
     expect((await store.snapshot("student")).results).toEqual(expect.arrayContaining([
       expect.objectContaining({ attemptId: started.attempt.id, released: true }),
     ]));
+  });
+
+  it("only exposes and starts assignments eligible for the fixture student", async () => {
+    const store = new DashboardStore({ filePath: await tempStatePath() });
+    const assigned = await store.dispatch({
+      type: "create-assignment",
+      testId: "test-demo-physics-01",
+      title: "Another learner only",
+      classIds: [],
+      directEmails: ["someone.else@example.test"],
+    });
+    if (assigned.type !== "assignment-created") throw new Error("expected assignment");
+
+    expect((await store.snapshot("student")).assignments.some((entry) => entry.id === assigned.assignment.id)).toBe(false);
+    await expect(store.dispatch({ type: "start-attempt", assignmentId: assigned.assignment.id }))
+      .rejects.toMatchObject({ code: "not_found" });
   });
 
   it("captures messaging and test-engine interactions without external calls", async () => {

@@ -97,6 +97,7 @@ export const DashboardAssignmentSchema = z.object({
   id: z.string().min(1),
   testId: z.string().min(1),
   title: z.string().min(1),
+  available: z.boolean().optional(),
   recipients: z.array(AssignmentRecipientSchema).min(1),
   createdAt: z.string().datetime({ offset: true }),
 }).strict();

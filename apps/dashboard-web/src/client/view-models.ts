@@ -87,7 +87,6 @@ export function toTeacherView(_snapshot: ApiTeacherSnapshot): TeacherDashboardSn
 
 export function toStudentView(_snapshot: ApiStudentSnapshot): StudentDashboardSnapshot {
   const snapshot = _snapshot;
-  let waitingIndex = 0;
   const tests = snapshot.assignments.map((assignment) => {
     const attempt = snapshot.attempts.find(
       (entry) => entry.assignmentId === assignment.id,
@@ -95,13 +94,15 @@ export function toStudentView(_snapshot: ApiStudentSnapshot): StudentDashboardSn
     const result = snapshot.results.find(
       (entry) => entry.assignmentId === assignment.id,
     );
-    const waitingStatus: StudentTestStatus = waitingIndex === 0 ? "assigned" : "pending";
     const status: StudentTestStatus = result
       ? "submitted"
+      : attempt?.status === "submitted"
+        ? "submitted"
       : attempt?.status === "in-progress"
         ? "in-progress"
-        : waitingStatus;
-    if (!result && attempt?.status !== "in-progress") waitingIndex += 1;
+        : assignment.available === false
+          ? "pending"
+          : "assigned";
     const classRecipient = assignment.recipients.find(
       (recipient) => recipient.kind === "class",
     );

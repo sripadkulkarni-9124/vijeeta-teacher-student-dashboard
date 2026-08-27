@@ -129,6 +129,7 @@ function initialState(): DashboardState {
       id: "assignment-motion-foundations-02",
       testId: DEMO_TEST.id,
       title: "Motion foundations",
+      available: true,
       recipients: [{ kind: "class", id: "class-aurora-physics", label: "Class 11 Physics", status: "pending" }],
       createdAt: "2026-09-02T04:00:00.000Z",
     },
@@ -136,6 +137,7 @@ function initialState(): DashboardState {
       id: "assignment-units-revision-03",
       testId: DEMO_TEST.id,
       title: "Units revision",
+      available: false,
       recipients: [{ kind: "class", id: "class-aurora-physics", label: "Class 11 Physics", status: "pending" }],
       createdAt: "2026-09-03T04:00:00.000Z",
     },
@@ -255,6 +257,7 @@ export class DashboardStore {
         },
       };
     }
+    const eligibleAssignments = assignments.filter((assignment) => isStudentEligible(assignment, state, STUDENT_ID));
     const studentAttempts = state.attempts.filter((attempt) => attempt.studentId === STUDENT_ID);
     const studentResults = state.results
       .filter((result) => studentAttempts.some((attempt) => attempt.id === result.attemptId))
@@ -265,12 +268,12 @@ export class DashboardStore {
       session: state.sessions.student,
       organisation: state.organisation,
       classes: state.classes,
-      assignments,
+      assignments: eligibleAssignments,
       attempts: studentAttempts,
       results: studentResults,
       insights: {
         personal: {
-          attempted: studentResults.length,
+          attempted: studentAttempts.filter((attempt) => attempt.status === "submitted").length,
           averageScore: averageScore(studentResults),
           score: studentResults.at(-1)?.score ?? 0,
           latestScore: studentResults.at(-1)?.score ?? null,
@@ -320,7 +323,7 @@ export class DashboardStore {
           ...action.classIds.map((id) => ({ kind: "class" as const, id, label: state.classes.find((entry) => entry.id === id)?.name ?? id, status: "pending" as const })),
           ...action.directEmails.map((email) => ({ kind: "email" as const, email, status: "pending" as const })),
         ];
-        const assignment: DashboardAssignment = { id: `assignment-${slug(action.title)}-${state.assignments.length + 1}`, testId: action.testId, title: action.title, recipients, createdAt: this.now() };
+        const assignment: DashboardAssignment = { id: `assignment-${slug(action.title)}-${state.assignments.length + 1}`, testId: action.testId, title: action.title, available: true, recipients, createdAt: this.now() };
         state.assignments.push(assignment);
         await this.save(state);
         return { type: "assignment-created", assignment };
@@ -336,6 +339,9 @@ export class DashboardStore {
       case "start-attempt": {
         const assignment = state.assignments.find((entry) => entry.id === action.assignmentId);
         if (!assignment) throw new DashboardStoreError("Assignment not found", "not_found");
+        if (!isStudentEligible(assignment, state, STUDENT_ID)) {
+          throw new DashboardStoreError("Assignment not found", "not_found");
+        }
         const test = state.tests.find((entry) => entry.id === assignment.testId);
         if (!test) throw new DashboardStoreError("Test not found", "not_found");
         if (test.questions.length === 0) throw new DashboardStoreError("Test has no questions", "conflict");
@@ -490,12 +496,35 @@ function upgradeState(state: DashboardState): boolean {
     state.assignments.push(assignment);
     changed = true;
   }
+  for (const assignment of state.assignments) {
+    if (assignment.available !== undefined) continue;
+    assignment.available = assignment.id !== "assignment-units-revision-03";
+    changed = true;
+  }
   for (const test of state.tests) {
     if (test.releasePolicy) continue;
     test.releasePolicy = state.quickTests.find((draft) => draft.id === test.id)?.releasePolicy ?? "after-test";
     changed = true;
   }
   return changed;
+}
+
+function isStudentEligible(
+  assignment: DashboardAssignment,
+  state: DashboardState,
+  studentId: string,
+): boolean {
+  const student = state.classes
+    .flatMap((entry) => entry.roster)
+    .find((entry) => entry.id === studentId);
+  return assignment.recipients.some((recipient) => {
+    if (recipient.kind === "class") {
+      return state.classes.some(
+        (entry) => entry.id === recipient.id && entry.roster.some((member) => member.id === studentId),
+      );
+    }
+    return Boolean(student?.email && student.email.toLowerCase() === recipient.email.toLowerCase());
+  });
 }
 
 function isReleasePolicyReleased(policy: ReleasePolicy, now: string): boolean {

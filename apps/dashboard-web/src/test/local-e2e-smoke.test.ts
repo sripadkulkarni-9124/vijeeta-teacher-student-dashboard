@@ -8,6 +8,7 @@ import {
   POST,
   createDemoServiceForTests,
 } from "@/app/api/demo/route";
+import { toStudentView } from "@/client/view-models";
 import { DashboardService } from "@/server/service";
 import { DashboardStore } from "@/server/store";
 
@@ -69,6 +70,9 @@ describe("local dashboard end-to-end smoke", () => {
         expect.objectContaining({ id: assignment.assignment.id }),
       ]),
     );
+    expect(toStudentView(studentBefore).tests.find(
+      (test) => test.id === assignment.assignment.id,
+    )?.status).toBe("assigned");
 
     const started = await postAction({
       type: "start-attempt",
