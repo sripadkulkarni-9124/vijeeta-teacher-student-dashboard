@@ -72,6 +72,9 @@ Each route has a colocated `route.test.ts`; shared route parsing lives in `apps/
 
 ### Operations and verification
 
+- `.github/workflows/dashboard-ci.yml`: unprivileged PR/push install, test, lint, typecheck, and build gate with no GCP credentials.
+- `cloudbuild.dashboard.yaml`: immutable image build recipe.
+- `cloudbuild.dashboard-release.yaml`: approval-gated main-SHA build/test/deploy recipe scoped to the new service only.
 - `firestore.indexes.dashboard.json`: named-database index definitions.
 - `docs/vijeeta-dashboard-api.md`: API authority and DTO handoff.
 - `docs/vijeeta-dashboard-operations.md`: observability/audit/reconciliation procedures.
@@ -623,6 +626,9 @@ git commit -m "feat: add connected teacher and student journeys"
 **Files:**
 - Create: `docs/vijeeta-dashboard-api.md`
 - Create: `docs/vijeeta-dashboard-operations.md`
+- Create: `docs/vijeeta-dashboard-cicd.md`
+- Create: `.github/workflows/dashboard-ci.yml`
+- Create: `cloudbuild.dashboard-release.yaml`
 - Modify: `docs/deploy-vijeeta-dashboard.md`
 - Modify: `apps/dashboard-web/Dockerfile` if the new modules need trace allowlisting.
 - Modify: `cloudbuild.dashboard.yaml` for non-secret pinned configuration only.
@@ -653,15 +659,24 @@ The approved operator creates `vijeeta-dashboard-admin-bootstrap` from a protect
 
 Document exact resources: runtime SA, named Firestore database, custom no-delete datastore role/condition, three Secret Manager secrets and per-secret accessor bindings, audit log bucket/sink/log-writer, immutable image, new Cloud Run service only, Authorized Domain step, candidate/no-traffic smoke, promotion, rollback, backup/PITR, and reversible IAM removal.
 
+Add a GitHub/GCP pipeline with these enforced boundaries:
+
+- `.github/workflows/dashboard-ci.yml` runs frozen install, tests, lint, typecheck, and build for pull requests and pushes without cloud credentials or deploy permissions.
+- `cloudbuild.dashboard-release.yaml` rejects non-40-character lowercase Git SHAs and any image destination except `asia-south1-docker.pkg.dev/neetcompanion-50b1f/cloud-run-source-deploy/vijeeta-dashboard:$COMMIT_SHA`.
+- The release recipe runs the same test gate, builds that immutable image, deploys only Cloud Run service `vijeeta-dashboard` in `asia-south1`, and never names or mutates `examprep-api`, Firebase Hosting, DNS, or an existing service.
+- The future GitHub Cloud Build connection/trigger watches `^main$`, requires approval before execution, uses a dedicated build service account, and is created only after the complete local release gate plus explicit cloud-write approval.
+- The build identity gets only source read, Artifact Registry writer on the existing repository, Cloud Build logging, `run.developer` scoped for the new service where supported, and `iam.serviceAccountUser` on the dashboard runtime identity only. It receives no Editor/Owner, Firebase, Firestore data, DNS, Hosting, Secret payload accessor, or existing-service permissions.
+- Initial repository publication pushes the reviewed feature branch to the already configured private `origin`; merging to `main` remains a reviewed repository action and does not authorize a cloud trigger or deploy.
+
 - [ ] **Step 4: Run boundary tests, build, and container inspection**
 
 Run: `pnpm --filter @vijeeta/dashboard-web test -- src/production-boundary.test.ts src/server/runtime-config.test.ts && pnpm --filter @vijeeta/dashboard-web build`
-Expected: PASS; no fixture/local persistence/bootstrap value/secret appears in standalone trace or client chunks.
+Expected: PASS; no fixture/local persistence/bootstrap value/secret appears in standalone trace or client chunks. Parse both Cloud Build YAML files and assert the release recipe contains only the exact project, region, image prefix, runtime service account, and `vijeeta-dashboard` service target.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/vijeeta-dashboard-api.md docs/vijeeta-dashboard-operations.md docs/deploy-vijeeta-dashboard.md apps/dashboard-web/Dockerfile cloudbuild.dashboard.yaml apps/dashboard-web/src/production-boundary.test.ts
+git add docs/vijeeta-dashboard-api.md docs/vijeeta-dashboard-operations.md docs/vijeeta-dashboard-cicd.md docs/deploy-vijeeta-dashboard.md .github/workflows/dashboard-ci.yml apps/dashboard-web/Dockerfile cloudbuild.dashboard.yaml cloudbuild.dashboard-release.yaml apps/dashboard-web/src/production-boundary.test.ts
 git commit -m "docs: add connected dashboard operations runbook"
 ```
 
@@ -733,9 +748,14 @@ Expected: PASS.
 
 - [ ] **Step 3: Produce the approval request**
 
-Report verified facts versus assumptions, initial Admin mechanism (not the secret value), Resend domain/key prerequisite, exact database/IAM/secrets/audit/service/image/region changes, authorized-domain step, candidate smoke limits, rollback, and any residual risk. Stop before database, IAM, secret, build, deploy, Firebase, or provider writes.
+Report verified facts versus assumptions, initial Admin mechanism (not the secret value), Resend domain/key prerequisite, exact database/IAM/secrets/audit/service/image/region changes, GitHub connection and approval-required main trigger, dedicated build identity/IAM, authorized-domain step, candidate smoke limits, rollback, and any residual risk. Stop before database, IAM, secret, connection, trigger, build, deploy, Firebase, or provider writes.
 
-- [ ] **Step 4: Commit the final evidence update**
+- [ ] **Step 4: Push the reviewed feature branch only after the full gate**
+
+Run: `git push --set-upstream origin feat/connected-dashboard`
+Expected: the private GitHub repository receives the immutable reviewed commits; `origin/main` and all cloud resources remain unchanged.
+
+- [ ] **Step 5: Commit the final evidence update**
 
 ```bash
 git add docs/vijeeta-dashboard-verification.md
