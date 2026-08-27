@@ -7,7 +7,7 @@ import {
 import type { AssignmentRepository } from "../../../../../server/dashboard-store";
 import { V3AdapterError, type V3ShareInput } from "../../../../../server/v3-assignment-adapter";
 import { HttpError, authenticateRequest, jsonResponse, parseIdempotencyKey, parseJsonBody, parsePagination, parseRouteId, requireNoQuery, requireRole, serveHttp } from "../../../../../server/http";
-import { firebaseBearer, productionAssignmentDependencies, type AssignmentRouteDependencies } from "../../../assignments/route-support";
+import { firebaseBearer, productionAssignmentDependencies, projectAssignment, type AssignmentRouteDependencies } from "../../../assignments/route-support";
 
 interface RouteContext { params: Promise<{ id: string }> }
 interface Dependencies extends AssignmentRouteDependencies {
@@ -27,7 +27,7 @@ export function createClassroomAssignmentsRouteHandlers(dependencies: Dependenci
       }
       const classroomId = parseRouteId((await routeContext.params).id);
       const page = await dependencies.assignments.listAssignmentsForPrincipalPage(principal, classroomId, parsePagination(request));
-      return jsonResponse(ClassroomAssignmentListResponseSchema.parse({ assignments: page.items, nextCursor: page.nextCursor }), { correlationId });
+      return jsonResponse(ClassroomAssignmentListResponseSchema.parse({ assignments: page.items.map(projectAssignment), nextCursor: page.nextCursor }), { correlationId });
     }, { createCorrelationId: dependencies.createCorrelationId }),
 
     POST: (request: Request, routeContext: RouteContext) => serveHttp(request, async ({ correlationId }) => {
@@ -40,11 +40,13 @@ export function createClassroomAssignmentsRouteHandlers(dependencies: Dependenci
       const prepared = await dependencies.assignments.prepareAssignment(principal, {
         classroomId, request: input, idempotencyKey: parseIdempotencyKey(request),
       }, { now: now(), correlationId });
-      if (prepared.disposition === "idempotent_replay") {
-        return jsonResponse(ClassroomAssignmentResponseSchema.parse({ assignment: prepared.assignment }), { correlationId });
+      if (prepared.assignment.state !== "creating") {
+        return jsonResponse(ClassroomAssignmentResponseSchema.parse({ assignment: projectAssignment(prepared.assignment) }), { correlationId });
       }
       const claimed = await dependencies.assignments.claimAssignmentShare(principal, prepared.assignment.id, { now: now(), correlationId });
-      if (!claimed.claimed) return jsonResponse(ClassroomAssignmentResponseSchema.parse({ assignment: claimed.assignment }), { correlationId });
+      if (claimed.status === "already_claimed") {
+        return jsonResponse(ClassroomAssignmentResponseSchema.parse({ assignment: projectAssignment(claimed.assignment) }), { correlationId });
+      }
       let completion;
       try {
         const result = await dependencies.assignmentAdapter.share({
@@ -63,7 +65,7 @@ export function createClassroomAssignmentsRouteHandlers(dependencies: Dependenci
       const assignment = await dependencies.assignments.completeAssignmentShare(
         principal, prepared.assignment.id, claimed.operationId, completion, { now: now(), correlationId },
       );
-      return jsonResponse(ClassroomAssignmentResponseSchema.parse({ assignment }), { status: 201, correlationId });
+      return jsonResponse(ClassroomAssignmentResponseSchema.parse({ assignment: projectAssignment(assignment) }), { status: 201, correlationId });
     }, { createCorrelationId: dependencies.createCorrelationId }),
   };
 }

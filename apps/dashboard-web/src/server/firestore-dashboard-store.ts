@@ -62,6 +62,8 @@ import {
 
 const DASHBOARD_DATABASE_ID = "vijeeta-dashboard";
 const MAX_PAGE_SIZE = 100;
+// Assignment + idempotency key + audit mirror consume three writes in the same atomic transaction.
+const MAX_ASSIGNMENT_RECIPIENTS = 497;
 
 export interface FirestoreDashboardDocumentSnapshot {
   id: string;
@@ -938,9 +940,9 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     const memberCandidates = await this.classroomReference(classroomId).collection("members")
       .where("status", "==", "active")
       .orderBy("studentUid", "asc")
-      .limit(501)
+      .limit(MAX_ASSIGNMENT_RECIPIENTS + 1)
       .get();
-    if (memberCandidates.docs.length === 0 || memberCandidates.docs.length > 500) {
+    if (memberCandidates.docs.length === 0 || memberCandidates.docs.length > MAX_ASSIGNMENT_RECIPIENTS) {
       throw new DashboardStoreError("Assignment recipients are unavailable", "assignment_recipients_unavailable");
     }
 
@@ -970,7 +972,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
         recipients.push({ uid: membership.studentUid, email: profile.verifiedEmail });
       }
       recipients.sort((left, right) => left.uid.localeCompare(right.uid));
-      if (recipients.length === 0 || recipients.length > 500) {
+      if (recipients.length === 0 || recipients.length > MAX_ASSIGNMENT_RECIPIENTS) {
         throw new DashboardStoreError("Assignment recipients are unavailable", "assignment_recipients_unavailable");
       }
 
@@ -992,6 +994,16 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
         runnerPath: null, reconciliation: null, createdAt: context.now, updatedAt: context.now,
       });
       transaction.create(this.assignmentReference(classroomId, assignment.id), assignment);
+      for (const recipient of recipients) {
+        transaction.create(this.studentAssignmentReference(recipient.uid, assignment.id), {
+          assignmentId: assignment.id,
+          classroomId: assignment.classroomId,
+          studentUid: recipient.uid,
+          ownerUid: assignment.ownerUid,
+          createdAt: assignment.createdAt,
+          updatedAt: assignment.updatedAt,
+        });
+      }
       transaction.create(keyReference, {
         actorUid: principal.uid, action: "assignment.create", correlationId: context.correlationId, idempotencyKey,
         requestHash, classroomId, targetId: assignment.id, createdAt: context.now,
@@ -1010,11 +1022,11 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     principalCandidate: VerifiedPrincipal,
     assignmentId: string,
     context: MutationContext,
-  ): Promise<{ claimed: true; operationId: string; assignment: ClassroomAssignment } | { claimed: false; assignment: ClassroomAssignment }> {
+  ): Promise<{ status: "claimed"; operationId: string; assignment: ClassroomAssignment } | { status: "already_claimed"; assignment: ClassroomAssignment }> {
     const principal = VerifiedPrincipalSchema.parse(principalCandidate);
     const resolved = await this.resolveAssignmentById(assignmentId);
     if (resolved === null) throw new DashboardStoreError("Assignment does not exist", "assignment_not_found");
-    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<{ claimed: true; operationId: string; assignment: ClassroomAssignment } | { claimed: false; assignment: ClassroomAssignment }>> => {
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<{ status: "claimed"; operationId: string; assignment: ClassroomAssignment } | { status: "already_claimed"; assignment: ClassroomAssignment }>> => {
       const actor = await this.getRequiredProfile(transaction, principal.uid);
       requireActiveTeacher(actor);
       const classroomSnapshot = await transaction.get(this.classroomReference(resolved.assignment.classroomId));
@@ -1026,8 +1038,21 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
       requireOwnedAssignment(assignment, principal.uid);
       const operationReference = resolved.reference.collection("outboundOperations").doc("v3-share");
       const operationSnapshot = await transaction.get(operationReference);
-      if (operationSnapshot.exists) return { value: { claimed: false, assignment }, event: null };
-      if (assignment.state !== "creating") throw invalidAssignmentTransition();
+      if (assignment.state !== "creating") return { value: { status: "already_claimed", assignment }, event: null };
+      if (operationSnapshot.exists) {
+        if (claimedAssignmentOperationId(operationSnapshot.data(), assignment) === null) {
+          throw new DashboardStoreError("Assignment operation identity is inconsistent", "assignment_identity_collision");
+        }
+        const uncertain = ClassroomAssignmentSchema.parse({
+          ...assignment, state: "reconciliation_required", reconciliation: { reason: "unknown", requiredAt: context.now }, updatedAt: context.now,
+        });
+        transaction.update(resolved.reference, uncertain);
+        const event = this.createAuditMirror(transaction, actor, {
+          action: "assignment.reconciliation_required", targetType: "assignment", targetId: assignment.id,
+          context, before: changes("state", "creating"), after: changes("state", "reconciliation_required"),
+        });
+        return { value: { status: "already_claimed", assignment: uncertain }, event };
+      }
       const operationId = this.randomUuid();
       transaction.create(operationReference, {
         id: operationId, assignmentId: assignment.id, classroomId: assignment.classroomId,
@@ -1043,7 +1068,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
         action: "assignment.reconciliation_required", targetType: "assignment", targetId: assignment.id,
         context, before: changes("state", "creating"), after: changes("state", "reconciliation_required"),
       });
-      return { value: { claimed: true, operationId, assignment: updated }, event };
+      return { value: { status: "claimed", operationId, assignment: updated }, event };
     });
     await this.emit(result.event);
     return result.value;
@@ -1099,28 +1124,51 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     const classroomSnapshot = await this.classroomReference(classroomId).get();
     if (!classroomSnapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
     const classroom = classroomFromSnapshot(classroomSnapshot);
-    const teacher = profile.roles.teacher === "active" && classroom.ownerUid === principal.uid;
-    let student = false;
-    if (profile.roles.student === "active") {
+    if (profile.activeRole === "teacher") {
+      if (profile.roles.teacher !== "active" || classroom.ownerUid !== principal.uid) {
+        throw new DashboardStoreError("Assignment is outside the verified principal scope", "assignment_forbidden");
+      }
+      const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "classroomAssignments");
+      let query = this.classroomReference(classroomId).collection("assignments")
+        .orderBy("createdAt", "desc").orderBy("__name__", "desc");
+      if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
+      const snapshot = await query.limit(page.limit + 1).get();
+      const items = snapshot.docs.slice(0, page.limit).map(assignmentFromSnapshot);
+      const last = items.at(-1);
+      return { items, nextCursor: snapshot.docs.length > page.limit && last !== undefined
+        ? encodeCursor("classroomAssignments", last.createdAt, last.id) : null };
+    }
+    if (profile.activeRole === "student" && profile.roles.student === "active") {
       const [reverse, member] = await Promise.all([
         this.studentMembershipReference(principal.uid, classroomId).get(),
         this.classroomReference(classroomId).collection("members").doc(principal.uid).get(),
       ]);
-      student = reverse.exists && member.exists
+      const student = reverse.exists && member.exists
         && membershipFromProjection(reverse, principal.uid, classroomId).status === "active"
         && membershipFromClassroom(member, classroomId).status === "active";
+      if (!student) throw new DashboardStoreError("Assignment is outside the verified principal scope", "assignment_forbidden");
+      const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "studentClassroomAssignments");
+      let query = this.studentAssignmentCollection(principal.uid)
+        .where("classroomId", "==", classroomId)
+        .orderBy("createdAt", "desc").orderBy("__name__", "desc");
+      if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
+      const projectionSnapshot = await query.limit(page.limit + 1).get();
+      const projections = projectionSnapshot.docs.slice(0, page.limit)
+        .map((snapshot) => studentAssignmentFromProjection(snapshot, principal.uid));
+      const items = await Promise.all(projections.map(async (projection) => {
+        const target = await this.assignmentReference(projection.classroomId, projection.assignmentId).get();
+        if (!target.exists) throw new DashboardStoreError("Student assignment target is unavailable", "assignment_projection_invalid");
+        const assignment = assignmentFromSnapshot(target);
+        if (assignment.ownerUid !== projection.ownerUid || !hasRecipient(assignment, principal.uid)) {
+          throw new DashboardStoreError("Student assignment projection is inconsistent", "assignment_projection_invalid");
+        }
+        return assignment;
+      }));
+      const last = projections.at(-1);
+      return { items, nextCursor: projectionSnapshot.docs.length > page.limit && last !== undefined
+        ? encodeCursor("studentClassroomAssignments", last.createdAt, last.assignmentId) : null };
     }
-    if (!teacher && !student) throw new DashboardStoreError("Assignment is outside the verified principal scope", "assignment_forbidden");
-    const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "classroomAssignments");
-    let query = this.classroomReference(classroomId).collection("assignments")
-      .orderBy("createdAt", "desc").orderBy("__name__", "desc");
-    if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
-    const snapshot = await query.limit(page.limit + 1).get();
-    const parsed = snapshot.docs.map(assignmentFromSnapshot);
-    const visible = (teacher ? parsed : parsed.filter((assignment) => hasRecipient(assignment, principal.uid))).slice(0, page.limit);
-    const last = visible.at(-1);
-    return { items: visible, nextCursor: snapshot.docs.length > page.limit && last !== undefined
-      ? encodeCursor("classroomAssignments", last.createdAt, last.id) : null };
+    throw new DashboardStoreError("Assignment is outside the verified principal scope", "assignment_forbidden");
   }
 
   async getOwnedAssignment(principalCandidate: VerifiedPrincipal, assignmentId: string): Promise<ClassroomAssignment | null> {
@@ -1492,6 +1540,16 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     return this.firestore.collection("studentMemberships").doc(studentUid).collection("classes");
   }
 
+  private studentAssignmentCollection(studentUid: string): FirestoreCollectionReference {
+    assertSafeDocumentId(studentUid, "Student UID");
+    return this.firestore.collection("studentAssignments").doc(studentUid).collection("assignments");
+  }
+
+  private studentAssignmentReference(studentUid: string, assignmentId: string): FirestoreDashboardDocumentReference {
+    assertSafeDocumentId(assignmentId, "Assignment ID");
+    return this.studentAssignmentCollection(studentUid).doc(assignmentId);
+  }
+
   private invitationReference(classroomId: string, invitationId: string): FirestoreDashboardDocumentReference {
     assertSafeDocumentId(invitationId, "Invitation ID");
     return this.classroomReference(classroomId).collection("invites").doc(invitationId);
@@ -1636,9 +1694,16 @@ function isClaimedAssignmentOperation(
   operationId: string,
   assignment: ClassroomAssignment,
 ): boolean {
-  if (operation === undefined) return false;
+  return claimedAssignmentOperationId(operation, assignment) === operationId;
+}
+
+function claimedAssignmentOperationId(
+  operation: Record<string, unknown> | undefined,
+  assignment: ClassroomAssignment,
+): string | null {
+  if (operation === undefined) return null;
   const keys = Object.keys(operation).sort();
-  return keys.length === 8
+  const valid = keys.length === 8
     && keys[0] === "assignmentId"
     && keys[1] === "classroomId"
     && keys[2] === "createdAt"
@@ -1647,7 +1712,8 @@ function isClaimedAssignmentOperation(
     && keys[5] === "ownerUid"
     && keys[6] === "status"
     && keys[7] === "updatedAt"
-    && operation.id === operationId
+    && typeof operation.id === "string"
+    && isSafeDocumentId(operation.id)
     && operation.assignmentId === assignment.id
     && operation.classroomId === assignment.classroomId
     && operation.ownerUid === assignment.ownerUid
@@ -1656,6 +1722,7 @@ function isClaimedAssignmentOperation(
     && operation.status === "claimed"
     && isIsoTimestamp(operation.createdAt)
     && isIsoTimestamp(operation.updatedAt);
+  return valid ? operation.id as string : null;
 }
 
 function membershipFromProjection(
@@ -1672,6 +1739,47 @@ function membershipFromProjection(
     throw new DashboardStoreError("Student membership projection is invalid", "membership_projection_invalid");
   }
   return parsed.data;
+}
+
+interface StudentAssignmentProjection {
+  assignmentId: string;
+  classroomId: string;
+  studentUid: string;
+  ownerUid: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+function studentAssignmentFromProjection(
+  snapshot: FirestoreDashboardDocumentSnapshot,
+  expectedStudentUid: string,
+): StudentAssignmentProjection {
+  const data = snapshot.data();
+  const path = snapshot.ref.path.split("/");
+  const keys = data === undefined ? [] : Object.keys(data).sort();
+  const valid = data !== undefined
+    && keys.length === 6
+    && keys[0] === "assignmentId"
+    && keys[1] === "classroomId"
+    && keys[2] === "createdAt"
+    && keys[3] === "ownerUid"
+    && keys[4] === "studentUid"
+    && keys[5] === "updatedAt"
+    && path.length === 4
+    && path[0] === "studentAssignments"
+    && path[1] === expectedStudentUid
+    && path[2] === "assignments"
+    && path[3] === snapshot.id
+    && data.assignmentId === snapshot.id
+    && data.studentUid === expectedStudentUid
+    && typeof data.classroomId === "string"
+    && isSafeDocumentId(data.classroomId)
+    && typeof data.ownerUid === "string"
+    && isSafeDocumentId(data.ownerUid)
+    && isIsoTimestamp(data.createdAt)
+    && isIsoTimestamp(data.updatedAt);
+  if (!valid) throw new DashboardStoreError("Student assignment projection is invalid", "assignment_projection_invalid");
+  return data as unknown as StudentAssignmentProjection;
 }
 
 function membershipFromClassroom(
@@ -1881,7 +1989,7 @@ function timestampToIso(value: unknown): string {
   throw new Error("Persisted profile timestamp is invalid");
 }
 
-type CursorScope = "profiles" | "auditEvents" | "classrooms" | "invitations" | "teacherClassrooms" | "studentClassrooms" | "rosterMembers" | "rosterInvitations" | "classroomAssignments";
+type CursorScope = "profiles" | "auditEvents" | "classrooms" | "invitations" | "teacherClassrooms" | "studentClassrooms" | "rosterMembers" | "rosterInvitations" | "classroomAssignments" | "studentClassroomAssignments";
 
 interface PageCursor {
   version: 1;

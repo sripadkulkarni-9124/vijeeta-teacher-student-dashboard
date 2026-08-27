@@ -6,6 +6,7 @@ import {
   AssignmentInsightsResponseSchema,
   AuditEventSchema,
   ClassroomAssignmentSchema,
+  ClassroomAssignmentProjectionSchema,
   ClassroomAssignmentResponseSchema,
   ClassroomInviteSchema,
   ClassroomRosterResponseSchema,
@@ -207,10 +208,35 @@ describe("connected dashboard contracts", () => {
       state: "active", testId: "test-1", shareId: "share-1", runnerPath: "/t/abcdefghijklmnop",
       reconciliation: null, createdAt: timestamp, updatedAt: timestamp,
     };
-    const projected = ClassroomAssignmentResponseSchema.parse({ assignment });
+    const { recipientSnapshot, ...internalWithoutRecipients } = assignment;
+    const publicAssignment = { ...internalWithoutRecipients, recipientCount: recipientSnapshot.length };
+    const projected = ClassroomAssignmentResponseSchema.parse({ assignment: publicAssignment });
     expect(projected.assignment).toMatchObject({ id: "assignment-1", recipientCount: 1 });
     expect(projected.assignment).not.toHaveProperty("recipientSnapshot");
     expect(JSON.stringify(projected)).not.toContain("student@example.com");
+    expect(ClassroomAssignmentProjectionSchema.parse(publicAssignment)).toEqual(publicAssignment);
+    expect(() => ClassroomAssignmentProjectionSchema.parse(assignment)).toThrow();
+    expect(() => ClassroomAssignmentSchema.parse(publicAssignment)).toThrow();
+    expect(ClassroomAssignmentSchema.parse(assignment).recipientSnapshot).toHaveLength(1);
+  });
+
+  it("accepts bounded legitimate negative-marking assignment insights", () => {
+    expect(AssignmentInsightsResponseSchema.parse({
+      freshness: timestamp,
+      insights: { aggregate: { attempted: 2, pending: 1, averageScore: -4.5 } },
+    }).insights.aggregate?.averageScore).toBe(-4.5);
+    expect(AssignmentInsightsResponseSchema.parse({
+      freshness: timestamp,
+      insights: { individual: { uid: "student-1", displayName: "Student One", score: -2, status: "attempted" } },
+    }).insights.individual?.score).toBe(-2);
+    expect(AssignmentInsightsResponseSchema.parse({
+      freshness: timestamp,
+      insights: { personal: { attempted: 1, averageScore: -3, score: -3, latestScore: -3 } },
+    }).insights.personal?.latestScore).toBe(-3);
+    expect(() => AssignmentInsightsResponseSchema.parse({
+      freshness: timestamp,
+      insights: { personal: { attempted: 1, averageScore: -1_000_001, score: 0, latestScore: null } },
+    })).toThrow();
   });
 
   it("bounds redacted audit changes", () => {

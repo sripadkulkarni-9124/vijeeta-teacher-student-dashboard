@@ -1,4 +1,4 @@
-import { AssignmentInsightsResponseSchema, type V3IndividualTestInsight } from "@vijeeta/api-contracts";
+import { AssignmentInsightsResponseSchema, DashboardProfileV2Schema, type V3IndividualTestInsight } from "@vijeeta/api-contracts";
 
 import type { AssignmentRepository } from "../../../../../../../server/dashboard-store";
 import { HttpError, authenticateRequest, jsonResponse, parseRouteId, requireNoQuery, requireRole, serveHttp } from "../../../../../../../server/http";
@@ -26,9 +26,17 @@ export function createStudentAssignmentInsightRouteHandler(dependencies: Depende
     if (!assignment.recipientSnapshot.some((recipient) => recipient.uid === studentUid)) {
       throw new HttpError(403, "forbidden", "This action is not permitted");
     }
+    const studentProfile = await dependencies.profiles.getProfile(studentUid);
+    if (studentProfile === null) throw new Error("Assignment recipient profile is unavailable");
+    const student = DashboardProfileV2Schema.parse(studentProfile);
+    if (student.firebaseUid !== studentUid || student.roles.student === undefined) {
+      throw new Error("Assignment recipient profile identity mismatch");
+    }
     const insight = await dependencies.insights.studentAnalysis(assignment.shareId, studentUid, firebaseBearer(request));
     if (insight.uid !== studentUid || insight.testId !== assignment.testId) throw new Error("V3 individual insight identity mismatch");
-    return jsonResponse(AssignmentInsightsResponseSchema.parse({ freshness: now(), insights: { individual: projectIndividual(insight) } }), { correlationId });
+    return jsonResponse(AssignmentInsightsResponseSchema.parse({
+      freshness: now(), insights: { individual: projectIndividual(insight, student.displayName ?? "Student") },
+    }), { correlationId });
   }, { createCorrelationId: dependencies.createCorrelationId });
 }
 

@@ -1090,21 +1090,33 @@ describe("FirestoreDashboardStore", () => {
     expect(first.assignment.recipientSnapshot).toEqual([{ uid: "student-uid", email: "student@example.com" }]);
 
     const claimed = await store.claimAssignmentShare(teacherPrincipal, first.assignment.id, context());
-    expect(claimed).toMatchObject({ claimed: true, assignment: { state: "reconciliation_required" } });
+    expect(claimed).toMatchObject({ status: "claimed", assignment: { state: "reconciliation_required" } });
     const competing = await store.claimAssignmentShare(teacherPrincipal, first.assignment.id, context());
-    expect(competing).toMatchObject({ claimed: false, assignment: { state: "reconciliation_required" } });
+    expect(competing).toMatchObject({ status: "already_claimed", assignment: { state: "reconciliation_required" } });
     const second = await store.prepareAssignment(teacherPrincipal, {
       ...input, idempotencyKey: "123e4567-e89b-12d3-a456-426614174001", request: { ...input.request, jobId: "job-2" },
     }, { ...context(), correlationId: "123e4567-e89b-12d3-a456-426614174001" });
     const firstPage = await store.listAssignmentsForPrincipalPage(teacherPrincipal, classroom.id, { limit: 1 });
     const secondPage = await store.listAssignmentsForPrincipalPage(teacherPrincipal, classroom.id, { limit: 1, cursor: firstPage.nextCursor! });
     expect(new Set([...firstPage.items, ...secondPage.items].map((assignment) => assignment.id))).toEqual(new Set([first.assignment.id, second.assignment.id]));
+    const studentFirstPage = await store.listAssignmentsForPrincipalPage(studentPrincipal, classroom.id, { limit: 1 });
+    const studentSecondPage = await store.listAssignmentsForPrincipalPage(studentPrincipal, classroom.id, { limit: 1, cursor: studentFirstPage.nextCursor! });
+    expect(new Set([...studentFirstPage.items, ...studentSecondPage.items].map((assignment) => assignment.id))).toEqual(new Set([first.assignment.id, second.assignment.id]));
+    expect(database.documents.get(`studentAssignments/student-uid/assignments/${first.assignment.id}`)).toMatchObject({
+      assignmentId: first.assignment.id, classroomId: classroom.id, studentUid: "student-uid",
+    });
     await store.suspendTeacher(adminPrincipal, teacherPrincipal.uid, context("Teacher suspended"));
-    if (!claimed.claimed) throw new Error("expected assignment claim");
+    if (claimed.status !== "claimed") throw new Error("expected assignment claim");
     const completed = await store.completeAssignmentShare(teacherPrincipal, first.assignment.id, claimed.operationId, {
       kind: "active", shareId: "share-1", testId: "test-1", runnerPath: "/t/abcdefghijklmnop",
     }, context());
     expect(completed).toMatchObject({ state: "active", shareId: "share-1", testId: "test-1" });
+    database.documents.set("profiles/teacher-uid", {
+      ...database.documents.get("profiles/teacher-uid"), roles: { teacher: "active" }, activeRole: "teacher",
+    });
+    await expect(store.claimAssignmentShare(teacherPrincipal, first.assignment.id, context())).resolves.toMatchObject({
+      status: "already_claimed", assignment: { state: "active" },
+    });
     expect([...database.documents.values()].filter((document) => document.action === "assignment.created")).toHaveLength(2);
     expect([...database.documents.values()].filter((document) => document.action === "assignment.activated")).toHaveLength(1);
   });
@@ -1125,6 +1137,14 @@ describe("FirestoreDashboardStore", () => {
     const prepared = await store.prepareAssignment(teacherPrincipal, { classroomId: classroom.id, idempotencyKey: CORRELATION_ID, request: {
       jobId: "job-1", openAt: "2026-08-28T07:00:00.000Z", closeAt: "2026-08-28T09:00:00.000Z", solutions: "after_close",
     } }, context());
+    database.documents.set(`classrooms/${classroom.id}/assignments/${prepared.assignment.id}/outboundOperations/v3-share`, {
+      id: "operation-crash", assignmentId: prepared.assignment.id, classroomId: classroom.id,
+      ownerUid: "teacher-uid", ownerProfileId: database.documents.get("profiles/teacher-uid")?.internalProfileId,
+      status: "claimed", createdAt: NOW, updatedAt: NOW,
+    });
+    await expect(store.claimAssignmentShare(teacherPrincipal, prepared.assignment.id, context())).resolves.toMatchObject({
+      status: "already_claimed", assignment: { state: "reconciliation_required" },
+    });
     database.documents.set(`classrooms/${classroom.id}/members/student-uid`, {
       ...database.documents.get(`classrooms/${classroom.id}/members/student-uid`), status: "suspended",
     });
@@ -1138,6 +1158,65 @@ describe("FirestoreDashboardStore", () => {
     const outsider = principal("outsider-uid", "outsider@example.com", true);
     await store.onboard(outsider, { role: "student" }, { ...context(), correlationId: "123e4567-e89b-12d3-a456-426614174001" });
     await expect(store.getAssignmentForStudent(outsider, prepared.assignment.id)).rejects.toMatchObject({ code: "assignment_forbidden" });
+  });
+
+  it("uses only activeRole for multi-role assignment listing and fails malformed reverse projections closed", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    await activeTeacher(store);
+    await store.onboard(studentPrincipal, { role: "student" }, context());
+    const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
+    const { invite } = await store.createInvitation(teacherPrincipal, {
+      id: "invite-role", classroomId: classroom.id, normalizedEmail: "student@example.com",
+      tokenDigest: "m".repeat(64), tokenVersion: 1, expiresAt: "2026-09-04T08:00:00.000Z",
+    }, context());
+    await store.acceptInvitation(studentPrincipal, {
+      classroomId: classroom.id, invitationId: invite.id, expectedTokenDigest: invite.tokenDigest, expectedTokenVersion: 1,
+    }, context());
+    const visible = await store.prepareAssignment(teacherPrincipal, {
+      classroomId: classroom.id, idempotencyKey: CORRELATION_ID,
+      request: { jobId: "job-visible", openAt: "2026-08-28T07:00:00.000Z", closeAt: "2026-08-28T09:00:00.000Z", solutions: "after_close" },
+    }, context());
+    database.documents.set(`classrooms/${classroom.id}/assignments/owner-only`, {
+      ...visible.assignment, id: "owner-only", jobId: "job-owner", recipientSnapshot: [{ uid: "other-student", email: "other@example.com" }],
+    });
+    database.documents.set("profiles/teacher-uid", {
+      ...database.documents.get("profiles/teacher-uid"), roles: { teacher: "active", student: "active" }, activeRole: "student",
+    });
+    database.documents.set(`classrooms/${classroom.id}/members/teacher-uid`, {
+      classroomId: classroom.id, studentUid: "teacher-uid", sourceInviteId: "invite-teacher", status: "active", joinedAt: NOW, updatedAt: NOW,
+    });
+    database.documents.set(`studentMemberships/teacher-uid/classes/${classroom.id}`, {
+      classroomId: classroom.id, studentUid: "teacher-uid", sourceInviteId: "invite-teacher", status: "active", joinedAt: NOW, updatedAt: NOW,
+    });
+    await expect(store.listAssignmentsForPrincipalPage(teacherPrincipal, classroom.id, { limit: 20 })).resolves.toMatchObject({ items: [] });
+
+    database.documents.set("profiles/teacher-uid", { ...database.documents.get("profiles/teacher-uid"), activeRole: "teacher" });
+    const teacherView = await store.listAssignmentsForPrincipalPage(teacherPrincipal, classroom.id, { limit: 20 });
+    expect(teacherView.items.map((assignment) => assignment.id)).toContain("owner-only");
+
+    await activeTeacher(store, otherTeacherPrincipal);
+    database.documents.set("profiles/other-teacher-uid", {
+      ...database.documents.get("profiles/other-teacher-uid"), roles: { teacher: "active", student: "active" }, activeRole: "teacher",
+    });
+    database.documents.set(`classrooms/${classroom.id}/members/other-teacher-uid`, {
+      classroomId: classroom.id, studentUid: "other-teacher-uid", sourceInviteId: "invite-other", status: "active", joinedAt: NOW, updatedAt: NOW,
+    });
+    database.documents.set(`studentMemberships/other-teacher-uid/classes/${classroom.id}`, {
+      classroomId: classroom.id, studentUid: "other-teacher-uid", sourceInviteId: "invite-other", status: "active", joinedAt: NOW, updatedAt: NOW,
+    });
+    await expect(store.listAssignmentsForPrincipalPage(otherTeacherPrincipal, classroom.id, { limit: 20 })).rejects.toMatchObject({ code: "assignment_forbidden" });
+
+    database.documents.set(`studentAssignments/student-uid/assignments/${visible.assignment.id}`, {
+      ...database.documents.get(`studentAssignments/student-uid/assignments/${visible.assignment.id}`), ownerUid: "wrong-owner",
+    });
+    await expect(store.listAssignmentsForPrincipalPage(studentPrincipal, classroom.id, { limit: 20 })).rejects.toMatchObject({ code: "assignment_projection_invalid" });
+    database.documents.set(`studentAssignments/student-uid/assignments/${visible.assignment.id}`, {
+      assignmentId: visible.assignment.id, classroomId: classroom.id, studentUid: "student-uid",
+      ownerUid: "teacher-uid", createdAt: NOW, updatedAt: NOW,
+    });
+    database.documents.delete(`classrooms/${classroom.id}/assignments/${visible.assignment.id}`);
+    await expect(store.listAssignmentsForPrincipalPage(studentPrincipal, classroom.id, { limit: 20 })).rejects.toMatchObject({ code: "assignment_projection_invalid" });
   });
 
   it("fails global assignment lookup closed for duplicate or physically inconsistent IDs", async () => {
@@ -1168,6 +1247,17 @@ describe("FirestoreDashboardStore", () => {
     } };
     await expect(store.prepareAssignment(teacherPrincipal, base, context())).rejects.toMatchObject({ code: "assignment_recipients_unavailable" });
     await expect(store.prepareAssignment(teacherPrincipal, { ...base, request: { ...base.request, openAt: "2026-08-28T07:00:00.500Z" } }, context())).rejects.toThrow();
+
+    for (let index = 0; index < 498; index += 1) {
+      const uid = `bulk-student-${String(index).padStart(3, "0")}`;
+      database.documents.set(`classrooms/${classroom.id}/members/${uid}`, {
+        classroomId: classroom.id, studentUid: uid, sourceInviteId: "bulk-invite", status: "active", joinedAt: NOW, updatedAt: NOW,
+      });
+    }
+    await expect(store.prepareAssignment(teacherPrincipal, base, context())).rejects.toMatchObject({ code: "assignment_recipients_unavailable" });
+    for (const path of [...database.documents.keys()]) {
+      if (path.startsWith(`classrooms/${classroom.id}/members/bulk-student-`)) database.documents.delete(path);
+    }
 
     await store.onboard(studentPrincipal, { role: "student" }, context());
     database.documents.set(`classrooms/${classroom.id}/members/student-uid`, {

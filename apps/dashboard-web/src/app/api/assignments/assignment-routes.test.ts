@@ -42,7 +42,7 @@ describe("assignment API orchestration", () => {
   it("claims one immutable assignment operation and calls V3 only for its creator", async () => {
     const assignments = {
       prepareAssignment: vi.fn(async () => ({ disposition: "created" as const, assignment: creating })),
-      claimAssignmentShare: vi.fn(async () => ({ claimed: true as const, operationId: "operation-1", assignment: reconciling })),
+      claimAssignmentShare: vi.fn(async () => ({ status: "claimed" as const, operationId: "operation-1", assignment: reconciling })),
       completeAssignmentShare: vi.fn(async (_principal, _id, _operation, outcome) => outcome.kind === "active" ? active : reconciling),
       listAssignmentsForPrincipalPage: vi.fn(),
     } as unknown as AssignmentRepository;
@@ -58,17 +58,53 @@ describe("assignment API orchestration", () => {
     expect(share).toHaveBeenCalledWith({ jobId: "job-1", recipientEmails: ["student@example.test"], openAt: OPEN, closeAt: CLOSE, solutions: "after_close" }, "abcdefghijklmnopqrst");
   });
 
-  it("does not retry an idempotent or ambiguous V3 share", async () => {
+  it("continues a persisted creating replay through the one atomic claim", async () => {
+    const assignments = {
+      prepareAssignment: vi.fn(async () => ({ disposition: "idempotent_replay" as const, assignment: creating })),
+      claimAssignmentShare: vi.fn(async () => ({ status: "claimed" as const, operationId: "operation-1", assignment: reconciling })),
+      completeAssignmentShare: vi.fn(async () => active), listAssignmentsForPrincipalPage: vi.fn(),
+    } as unknown as AssignmentRepository;
+    const share = vi.fn(async () => ({ shareId: "share-1", testId: "test-1", runnerPath: "/t/abcdefghijklmnop" }));
+    const replay = createClassroomAssignmentsRouteHandlers({ verifier: { verify: vi.fn(async () => principal) }, profiles: profileReader(teacherProfile), assignments, assignmentAdapter: { share }, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
+    const response = await replay.POST(request("POST", "http://localhost/api/classes/class-1/assignments", { jobId: "job-1", openAt: OPEN, closeAt: CLOSE, solutions: "after_close" }), { params: Promise.resolve({ id: "class-1" }) });
+    expect(response.status).toBe(201);
+    expect(assignments.claimAssignmentShare).toHaveBeenCalledOnce();
+    expect(share).toHaveBeenCalledOnce();
+  });
+
+  it("never posts again after another caller already claimed an uncertain share", async () => {
     const assignments = {
       prepareAssignment: vi.fn(async () => ({ disposition: "idempotent_replay" as const, assignment: reconciling })),
-      claimAssignmentShare: vi.fn(), completeAssignmentShare: vi.fn(), listAssignmentsForPrincipalPage: vi.fn(),
+      claimAssignmentShare: vi.fn(async () => ({ status: "already_claimed" as const, assignment: reconciling })),
+      completeAssignmentShare: vi.fn(), listAssignmentsForPrincipalPage: vi.fn(),
     } as unknown as AssignmentRepository;
     const share = vi.fn();
     const replay = createClassroomAssignmentsRouteHandlers({ verifier: { verify: vi.fn(async () => principal) }, profiles: profileReader(teacherProfile), assignments, assignmentAdapter: { share }, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
     const response = await replay.POST(request("POST", "http://localhost/api/classes/class-1/assignments", { jobId: "job-1", openAt: OPEN, closeAt: CLOSE, solutions: "after_close" }), { params: Promise.resolve({ id: "class-1" }) });
     expect(response.status).toBe(200);
     expect(share).not.toHaveBeenCalled();
-    expect(assignments.claimAssignmentShare).not.toHaveBeenCalled();
+    expect(assignments.completeAssignmentShare).not.toHaveBeenCalled();
+  });
+
+  it("allows exactly one V3 POST across concurrent creating replays", async () => {
+    const claim = vi.fn()
+      .mockResolvedValueOnce({ status: "claimed" as const, operationId: "operation-1", assignment: reconciling })
+      .mockResolvedValueOnce({ status: "already_claimed" as const, assignment: reconciling });
+    const assignments = {
+      prepareAssignment: vi.fn(async () => ({ disposition: "idempotent_replay" as const, assignment: creating })),
+      claimAssignmentShare: claim,
+      completeAssignmentShare: vi.fn(async () => active), listAssignmentsForPrincipalPage: vi.fn(),
+    } as unknown as AssignmentRepository;
+    const share = vi.fn(async () => ({ shareId: "share-1", testId: "test-1", runnerPath: "/t/abcdefghijklmnop" }));
+    const handlers = createClassroomAssignmentsRouteHandlers({ verifier: { verify: vi.fn(async () => principal) }, profiles: profileReader(teacherProfile), assignments, assignmentAdapter: { share }, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
+    const makeRequest = () => request("POST", "http://localhost/api/classes/class-1/assignments", { jobId: "job-1", openAt: OPEN, closeAt: CLOSE, solutions: "after_close" });
+    const responses = await Promise.all([
+      handlers.POST(makeRequest(), { params: Promise.resolve({ id: "class-1" }) }),
+      handlers.POST(makeRequest(), { params: Promise.resolve({ id: "class-1" }) }),
+    ]);
+    expect(responses.map((response) => response.status).sort()).toEqual([200, 201]);
+    expect(claim).toHaveBeenCalledTimes(2);
+    expect(share).toHaveBeenCalledOnce();
   });
 
   it("requires a separate validated idempotency key and redacts recipients from lists", async () => {
@@ -93,7 +129,7 @@ describe("assignment API orchestration", () => {
       const completed = kind === "failed" ? { ...creating, state: "failed" as const, failureCode: "v3_403" } : reconciling;
       const assignments = {
         prepareAssignment: vi.fn(async () => ({ disposition: "created" as const, assignment: creating })),
-        claimAssignmentShare: vi.fn(async () => ({ claimed: true as const, operationId: "operation-1", assignment: reconciling })),
+        claimAssignmentShare: vi.fn(async () => ({ status: "claimed" as const, operationId: "operation-1", assignment: reconciling })),
         completeAssignmentShare: vi.fn(async () => completed), listAssignmentsForPrincipalPage: vi.fn(),
       } as unknown as AssignmentRepository;
       const handlers = createClassroomAssignmentsRouteHandlers({ verifier: { verify: vi.fn(async () => principal) }, profiles: profileReader(teacherProfile), assignments, assignmentAdapter: { share: vi.fn(async () => { throw error; }) }, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
@@ -129,18 +165,25 @@ describe("assignment read and reconciliation authority", () => {
   });
 
   it("forces Student self insight UID and checks Teacher recipient authority before V3", async () => {
-    const personal: V3IndividualTestInsight = { uid: "student-uid", testId: "test-1", available: true, title: "Physics", score: 8, maxScore: 10, percentile: 90, deltaFromPrevious: 1 };
+    const personal: V3IndividualTestInsight = { uid: "student-uid", testId: "test-1", available: true, title: "Physics", score: -2, maxScore: 10, percentile: 90, deltaFromPrevious: -1 };
     const studentTestAnalysis = vi.fn(async () => personal);
     const selfHandler = createAssignmentInsightsRouteHandler({ verifier: { verify: vi.fn(async () => studentPrincipal) }, profiles: profileReader(studentProfile), assignments: { getAssignmentForStudent: vi.fn(async () => active) } as unknown as AssignmentRepository, insights: { shareResults: vi.fn(), studentAnalysis: vi.fn(), studentTestAnalysis }, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
     const response = await selfHandler(request("GET", "http://localhost/api/assignments/assignment-1/insights"), { params: Promise.resolve({ id: "assignment-1" }) });
     expect(response.status).toBe(200);
     expect(studentTestAnalysis).toHaveBeenCalledWith("test-1", "student-uid", "abcdefghijklmnopqrst");
+    expect((await response.json()).insights.personal).toMatchObject({ score: -2, averageScore: -2, latestScore: -2 });
 
     const individual = vi.fn(async () => personal);
-    const teacherHandler = createStudentAssignmentInsightRouteHandler({ verifier: { verify: vi.fn(async () => principal) }, profiles: profileReader(teacherProfile), assignments: { getOwnedAssignment: vi.fn(async () => active) } as unknown as AssignmentRepository, insights: { studentAnalysis: individual }, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
+    const profiles: Pick<ProfileRepository, "getProfile"> = { getProfile: vi.fn(async (uid) => uid === principal.uid ? teacherProfile : studentProfile) };
+    const teacherHandler = createStudentAssignmentInsightRouteHandler({ verifier: { verify: vi.fn(async () => principal) }, profiles, assignments: { getOwnedAssignment: vi.fn(async () => active) } as unknown as AssignmentRepository, insights: { studentAnalysis: individual }, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
     const denied = await teacherHandler(request("GET", "http://localhost/api/assignments/assignment-1/students/other-uid/insights"), { params: Promise.resolve({ id: "assignment-1", uid: "other-uid" }) });
     expect(denied.status).toBe(403);
     expect(individual).not.toHaveBeenCalled();
+    const allowed = await teacherHandler(request("GET", "http://localhost/api/assignments/assignment-1/students/student-uid/insights"), { params: Promise.resolve({ id: "assignment-1", uid: "student-uid" }) });
+    expect(allowed.status).toBe(200);
+    const allowedBody = await allowed.json();
+    expect(allowedBody.insights.individual).toMatchObject({ uid: "student-uid", displayName: "Student" });
+    expect(JSON.stringify(allowedBody)).not.toContain("Physics");
   });
 
   it("denies Admin insight authority before any V3 adapter call", async () => {

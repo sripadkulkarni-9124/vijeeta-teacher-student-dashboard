@@ -282,6 +282,7 @@ function mapError(error: unknown): HttpError {
     case "assignment_recipients_unavailable":
       return new HttpError(409, "assignment_recipients_unavailable", "No eligible classroom recipients are available");
     case "assignment_identity_collision":
+    case "assignment_projection_invalid":
       return new HttpError(503, "service_unavailable", "The dashboard service is temporarily unavailable", true);
     case "email_index_collision":
     case "email_index_invalid":

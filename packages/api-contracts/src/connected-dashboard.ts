@@ -202,10 +202,32 @@ export const ClassroomAssignmentSchema = z.discriminatedUnion("state", [
   }
 });
 export type ClassroomAssignment = z.infer<typeof ClassroomAssignmentSchema>;
-export const ClassroomAssignmentProjectionSchema = ClassroomAssignmentSchema.transform(({ recipientSnapshot, ...assignment }) => ({
-  ...assignment,
-  recipientCount: recipientSnapshot.length,
-}));
+const AssignmentProjectionBase = {
+  id: IdentifierSchema,
+  classroomId: IdentifierSchema,
+  ownerUid: IdentifierSchema,
+  jobId: IdentifierSchema,
+  recipientCount: z.number().int().positive().max(MAX_RECIPIENTS),
+  openAt: IsoTimestampSchema,
+  closeAt: IsoTimestampSchema.nullable(),
+  solutions: AssignmentSolutionsSchema,
+  createdAt: IsoTimestampSchema,
+  updatedAt: IsoTimestampSchema,
+};
+export const ClassroomAssignmentProjectionSchema = z.discriminatedUnion("state", [
+  z.object({ ...AssignmentProjectionBase, state: z.literal("creating"), testId: z.null(), shareId: z.null(), runnerPath: z.null(), reconciliation: z.null() }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("active"), testId: IdentifierSchema, shareId: IdentifierSchema, runnerPath: z.string().startsWith("/").max(512), reconciliation: z.null() }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("failed"), testId: z.null(), shareId: z.null(), runnerPath: z.null(), reconciliation: z.null(), failureCode: z.string().min(1).max(64) }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("reconciliation_required"), testId: z.null(), shareId: z.null(), runnerPath: z.null(), reconciliation: AssignmentReconciliationSchema }).strict(),
+  z.object({ ...AssignmentProjectionBase, state: z.literal("archived"), testId: IdentifierSchema.nullable(), shareId: IdentifierSchema.nullable(), runnerPath: z.null(), reconciliation: z.null() }).strict(),
+]).superRefine((assignment, context) => {
+  if (assignment.solutions === "after_close" && assignment.closeAt === null) {
+    context.addIssue({ code: "custom", message: "after_close solutions require a close time", path: ["closeAt"] });
+  }
+  if (assignment.closeAt !== null && Date.parse(assignment.closeAt) <= Date.parse(assignment.openAt)) {
+    context.addIssue({ code: "custom", message: "closeAt must be after openAt", path: ["closeAt"] });
+  }
+});
 export type ClassroomAssignmentProjection = z.infer<typeof ClassroomAssignmentProjectionSchema>;
 
 export const AuditActionSchema = z.enum([
@@ -383,14 +405,9 @@ export const CreateClassroomAssignmentRequestSchema = z.object({
   solutions: AssignmentSolutionsSchema,
 }).strict();
 export type CreateClassroomAssignmentRequest = z.infer<typeof CreateClassroomAssignmentRequestSchema>;
-export const ClassroomAssignmentResponseSchema = z.object({ assignment: ClassroomAssignmentSchema }).strict().transform(({ assignment }) => ({
-  assignment: ClassroomAssignmentProjectionSchema.parse(assignment),
-}));
+export const ClassroomAssignmentResponseSchema = z.object({ assignment: ClassroomAssignmentProjectionSchema }).strict();
 export type ClassroomAssignmentResponse = z.infer<typeof ClassroomAssignmentResponseSchema>;
-export const ClassroomAssignmentListResponseSchema = z.object({ assignments: z.array(ClassroomAssignmentSchema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict().transform(({ assignments, nextCursor }) => ({
-  assignments: assignments.map((assignment) => ClassroomAssignmentProjectionSchema.parse(assignment)),
-  nextCursor,
-}));
+export const ClassroomAssignmentListResponseSchema = z.object({ assignments: z.array(ClassroomAssignmentProjectionSchema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict();
 export type ClassroomAssignmentListResponse = z.infer<typeof ClassroomAssignmentListResponseSchema>;
 
 export const AssignmentLaunchResponseSchema = z.object({ runnerPath: z.string().startsWith("/").max(512) }).strict();
@@ -398,23 +415,23 @@ export type AssignmentLaunchResponse = z.infer<typeof AssignmentLaunchResponseSc
 export const AssignmentAggregateInsightSchema = z.object({
   attempted: z.number().int().nonnegative().max(MAX_RECIPIENTS),
   pending: z.number().int().nonnegative().max(MAX_RECIPIENTS),
-  averageScore: z.number().finite().nonnegative().max(1_000_000),
+  averageScore: z.number().finite().min(-1_000_000).max(1_000_000),
 }).strict();
 export type AssignmentAggregateInsight = z.infer<typeof AssignmentAggregateInsightSchema>;
 
 export const AssignmentIndividualInsightSchema = z.object({
   uid: IdentifierSchema,
   displayName: BoundedTextSchema(160),
-  score: z.number().finite().nonnegative().max(1_000_000).nullable(),
+  score: z.number().finite().min(-1_000_000).max(1_000_000).nullable(),
   status: z.enum(["attempted", "pending"]),
 }).strict();
 export type AssignmentIndividualInsight = z.infer<typeof AssignmentIndividualInsightSchema>;
 
 export const AssignmentPersonalInsightSchema = z.object({
   attempted: z.number().int().nonnegative().max(MAX_RECIPIENTS),
-  averageScore: z.number().finite().nonnegative().max(1_000_000),
-  score: z.number().finite().nonnegative().max(1_000_000),
-  latestScore: z.number().finite().nonnegative().max(1_000_000).nullable(),
+  averageScore: z.number().finite().min(-1_000_000).max(1_000_000),
+  score: z.number().finite().min(-1_000_000).max(1_000_000),
+  latestScore: z.number().finite().min(-1_000_000).max(1_000_000).nullable(),
 }).strict();
 export type AssignmentPersonalInsight = z.infer<typeof AssignmentPersonalInsightSchema>;
 

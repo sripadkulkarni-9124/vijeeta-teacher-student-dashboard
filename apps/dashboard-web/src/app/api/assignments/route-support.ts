@@ -2,6 +2,9 @@ import {
   AssignmentAggregateInsightSchema,
   AssignmentIndividualInsightSchema,
   AssignmentPersonalInsightSchema,
+  ClassroomAssignmentProjectionSchema,
+  ClassroomAssignmentSchema,
+  type ClassroomAssignment,
   type V3IndividualTestInsight,
   type V3ShareResults,
 } from "@vijeeta/api-contracts";
@@ -29,6 +32,12 @@ export function firebaseBearer(request: Request): string {
   return authorization.slice("Bearer ".length);
 }
 
+export function projectAssignment(assignment: ClassroomAssignment) {
+  const internal = ClassroomAssignmentSchema.parse(assignment);
+  const { recipientSnapshot, ...redacted } = internal;
+  return ClassroomAssignmentProjectionSchema.parse({ ...redacted, recipientCount: recipientSnapshot.length });
+}
+
 export function projectAggregate(results: V3ShareResults) {
   return AssignmentAggregateInsightSchema.parse({
     attempted: results.funnel.attempted,
@@ -37,10 +46,10 @@ export function projectAggregate(results: V3ShareResults) {
   });
 }
 
-export function projectIndividual(insight: V3IndividualTestInsight) {
+export function projectIndividual(insight: V3IndividualTestInsight, displayName: string) {
   return AssignmentIndividualInsightSchema.parse({
     uid: insight.uid,
-    displayName: insight.title ?? insight.uid,
+    displayName,
     score: insight.score,
     status: insight.available && insight.score !== null ? "attempted" : "pending",
   });

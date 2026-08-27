@@ -214,8 +214,8 @@ export interface AssignmentRepository {
     context: MutationContext,
   ): Promise<AssignmentPreparationResult>;
   claimAssignmentShare(principal: VerifiedPrincipal, assignmentId: string, context: MutationContext): Promise<
-    { claimed: true; operationId: string; assignment: ClassroomAssignment }
-    | { claimed: false; assignment: ClassroomAssignment }
+    { status: "claimed"; operationId: string; assignment: ClassroomAssignment }
+    | { status: "already_claimed"; assignment: ClassroomAssignment }
   >;
   completeAssignmentShare(
     principal: VerifiedPrincipal,
@@ -259,6 +259,7 @@ export type DashboardStoreErrorCode =
   | "assignment_forbidden"
   | "assignment_transition_invalid"
   | "assignment_identity_collision"
+  | "assignment_projection_invalid"
   | "assignment_recipients_unavailable"
   | "pagination_cursor_invalid"
   | "profile_exists"
