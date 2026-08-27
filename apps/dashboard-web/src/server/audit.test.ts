@@ -149,4 +149,54 @@ describe("StructuredAuditEmitter", () => {
       },
     });
   });
+
+  it("redacts every component of a Cookie header line while preserving surrounding safe lines", async () => {
+    const records: unknown[] = [];
+    const emitter = new StructuredAuditEmitter({ write: async (record) => { records.push(record); } });
+
+    await emitter.emit({
+      ...event,
+      reason: [
+        "Safe context before the request headers.",
+        "Cookie: sid=abc; csrf=xyz; theme=dark",
+        "Safe context after the request headers.",
+      ].join("\n"),
+    });
+
+    expect(records[0]).toMatchObject({
+      audit: {
+        reason: [
+          "Safe context before the request headers.",
+          "Cookie=[REDACTED]",
+          "Safe context after the request headers.",
+        ].join("\n"),
+      },
+    });
+    expect(JSON.stringify(records[0])).not.toMatch(/sid=abc|csrf=xyz|theme=dark/);
+  });
+
+  it("redacts every Digest Authorization parameter without hiding adjacent safe lines", async () => {
+    const records: unknown[] = [];
+    const emitter = new StructuredAuditEmitter({ write: async (record) => { records.push(record); } });
+
+    await emitter.emit({
+      ...event,
+      reason: [
+        "Keep this safe explanation.",
+        'Authorization: Digest username="digest-user-secret", realm="private-realm-secret", nonce="nonce-secret", response="response-secret"',
+        "Keep this safe outcome.",
+      ].join("\n"),
+    });
+
+    expect(records[0]).toMatchObject({
+      audit: {
+        reason: [
+          "Keep this safe explanation.",
+          "Authorization=[REDACTED]",
+          "Keep this safe outcome.",
+        ].join("\n"),
+      },
+    });
+    expect(JSON.stringify(records[0])).not.toMatch(/digest-user-secret|private-realm-secret|nonce-secret|response-secret/);
+  });
 });

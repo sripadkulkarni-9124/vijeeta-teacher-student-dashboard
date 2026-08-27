@@ -1,6 +1,7 @@
 import { AuditEventSchema, type AuditEvent, type RedactedAuditChangeSet } from "@vijeeta/api-contracts";
 
 const EMAIL = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
+const SENSITIVE_HEADER_LINE = /^([ \t]*)(authorization|proxy-authorization|cookie|set-cookie|api[-_ ]?key|x-api-key)[ \t]*[:=][^\r\n]*/gim;
 const AUTH_CREDENTIAL = /\b(Bearer|Basic|Digest)\s+[^\s,;]+/gi;
 const SENSITIVE_ASSIGNMENT = /\b(authorization|proxy-authorization|cookie|set-cookie|api[-_ ]?key|x-api-key|password|passwd|credential|secret|access[-_]?token|refresh[-_]?token|id[-_]?token|token)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b/g;
@@ -94,7 +95,8 @@ function safeChanges(changeSet: RedactedAuditChangeSet): SafeAuditChange[] {
 
 function sanitizeText(value: string | null, maximum = 500): string | null {
   return value
-    ?.replace(AUTH_CREDENTIAL, "$1 [REDACTED]")
+    ?.replace(SENSITIVE_HEADER_LINE, "$1$2=[REDACTED]")
+    .replace(AUTH_CREDENTIAL, "$1 [REDACTED]")
     .replace(SENSITIVE_ASSIGNMENT, "$1=[REDACTED]")
     .replace(JWT, "[REDACTED_JWT]")
     .replace(COMMON_API_KEY, "[REDACTED_API_KEY]")
