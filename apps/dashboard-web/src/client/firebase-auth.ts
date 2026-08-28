@@ -2,9 +2,9 @@ import type { ProductionAuthSession, ProductionUser } from "./production-api";
 import { getApp, getApps, initializeApp } from "firebase/app";
 import {
   browserPopupRedirectResolver,
+  browserSessionPersistence,
   getAuth,
   GoogleAuthProvider,
-  inMemoryPersistence,
   initializeAuth,
   connectAuthEmulator,
   createUserWithEmailAndPassword,
@@ -86,14 +86,18 @@ async function loadRuntime(): Promise<FirebaseRuntime> {
     // initializeAuth, unlike getAuth, installs no popup/redirect resolver, and
     // signInWithPopup then fails with auth/argument-error. It has to be named
     // explicitly here.
+    // Session-scoped, not in-memory. A redirect sign-in navigates away and
+    // back, and in-memory state does not survive that, so the viewer returned
+    // signed out and bounced to the sign-in screen. sessionStorage is cleared
+    // when the tab closes and is not shared with other tabs.
     auth = initializeAuth(app, {
-      persistence: inMemoryPersistence,
+      persistence: browserSessionPersistence,
       popupRedirectResolver: browserPopupRedirectResolver,
     }) as unknown as FirebaseAuthLike;
   } catch {
     // A hot-reloaded browser can already have an Auth instance for this app.
     auth = getAuth(app) as unknown as FirebaseAuthLike;
-    await setPersistence(auth as unknown as Auth, inMemoryPersistence);
+    await setPersistence(auth as unknown as Auth, browserSessionPersistence);
   }
   const emulator = authEmulatorUrl();
   if (emulator !== null) {
@@ -113,7 +117,7 @@ async function loadRuntime(): Promise<FirebaseRuntime> {
   };
 }
 
-/** Firebase Auth only. Tokens are refreshed on every API request and are never persisted. */
+/** Firebase Auth only. Tokens refresh on every API request and live no longer than the browser tab. */
 export function createFirebaseAuth(options: { loadRuntime?: () => Promise<FirebaseRuntime> } = {}): ProductionAuthSession {
   let currentUser: ProductionUser | null = null;
   let runtimePromise: Promise<FirebaseRuntime> | null = null;
