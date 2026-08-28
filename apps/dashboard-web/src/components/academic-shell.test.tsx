@@ -1,9 +1,12 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AcademicShell } from "./academic-shell";
 
-afterEach(() => document.body.replaceChildren());
+afterEach(() => {
+  document.body.replaceChildren();
+  window.history.replaceState({}, "", "/");
+});
 
 describe("AcademicShell", () => {
   it("renders semantic landmarks, active navigation, and only server-authorized items", () => {
@@ -45,5 +48,36 @@ describe("AcademicShell", () => {
     expect(container.querySelector(".academic-shell__mobile-nav")).toBeInTheDocument();
     expect(container.querySelector(".academic-shell__content-grid")).toBeInTheDocument();
     expect(screen.getAllByText("Admin workspace")).toHaveLength(2);
+  });
+
+  it("keeps Overview inactive when a hash-selected Admin section is current", async () => {
+    window.history.replaceState({}, "", "/admin#admin-classes");
+    render(
+      <AcademicShell
+        profile={{ displayName: "Asha Admin", email: null, activeRole: "admin" }}
+        navigation={[
+          { label: "Overview", href: "/admin", icon: "O" },
+          { label: "Classes", href: "/admin#admin-classes", icon: "C" },
+          { label: "Audit", href: "/admin#admin-audit", icon: "A" },
+        ]}
+        currentHref="/admin"
+      >
+        <h1>Administration</h1>
+      </AcademicShell>,
+    );
+
+    const primary = screen.getByRole("navigation", { name: /primary/i });
+    const overview = within(primary).getByRole("link", { name: /overview/i });
+    const classes = within(primary).getByRole("link", { name: /classes/i });
+    const audit = within(primary).getByRole("link", { name: /audit/i });
+    await waitFor(() => expect(classes).toHaveAttribute("aria-current", "page"));
+    expect(overview).not.toHaveAttribute("aria-current");
+
+    fireEvent.click(audit);
+    expect(audit).toHaveAttribute("aria-current", "page");
+    expect(overview).not.toHaveAttribute("aria-current");
+    window.history.pushState({}, "", "/admin");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(overview).toHaveAttribute("aria-current", "page"));
   });
 });

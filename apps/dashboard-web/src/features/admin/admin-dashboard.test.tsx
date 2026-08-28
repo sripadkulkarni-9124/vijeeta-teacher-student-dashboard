@@ -11,7 +11,10 @@ import type {
 
 import { ADMIN_CLIENT_METHODS, AdminDashboard, type AdminDashboardApi } from "./admin-dashboard";
 
-afterEach(() => document.body.replaceChildren());
+afterEach(() => {
+  document.body.replaceChildren();
+  window.history.replaceState({}, "", "/");
+});
 
 const now = "2026-08-28T10:00:00.000Z";
 const profile = (state: "pending" | "active" = "pending"): DashboardProfileV2 => ({
@@ -58,6 +61,36 @@ function api(overrides: Partial<AdminDashboardApi> = {}): AdminDashboardApi {
 }
 
 describe("AdminDashboard", () => {
+  it("tracks one truthful subsection across initial hash, click, history, and keyboard activation", async () => {
+    window.history.replaceState({}, "", "/admin#admin-classes");
+    render(<AdminDashboard api={api()} />);
+    await screen.findByText("Leena Rao");
+    const nav = screen.getByRole("navigation", { name: /administration sections/i });
+    const classes = within(nav).getByRole("link", { name: "Classes" });
+    const invitationsLink = within(nav).getByRole("link", { name: "Invitations" });
+    const auditLink = within(nav).getByRole("link", { name: "Audit" });
+    const profilesLink = within(nav).getByRole("link", { name: "Profiles" });
+
+    expect(classes).toHaveAttribute("aria-current", "location");
+    expect(within(nav).getAllByRole("link").filter((link) => link.hasAttribute("aria-current"))).toHaveLength(1);
+    fireEvent.click(invitationsLink);
+    expect(invitationsLink).toHaveAttribute("aria-current", "location");
+    expect(classes).not.toHaveAttribute("aria-current");
+    expect(window.location.hash).toBe("#admin-invitations");
+
+    window.history.pushState({}, "", "/admin#admin-audit");
+    window.dispatchEvent(new HashChangeEvent("hashchange"));
+    await waitFor(() => expect(auditLink).toHaveAttribute("aria-current", "location"));
+    window.history.pushState({}, "", "/admin#admin-classes");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+    await waitFor(() => expect(classes).toHaveAttribute("aria-current", "location"));
+
+    profilesLink.focus();
+    fireEvent.keyDown(profilesLink, { key: "Enter" });
+    expect(profilesLink).toHaveFocus();
+    expect(profilesLink).toHaveAttribute("aria-current", "location");
+    expect(window.location.hash).toBe("#admin-profiles");
+  });
   it("renders typed profile, class, invitation, and immutable audit metadata with bounded pagination", async () => {
     const client = api();
     render(<AdminDashboard api={client} />);
@@ -130,6 +163,66 @@ describe("AdminDashboard", () => {
     fireEvent.click(archive);
     fireEvent.keyDown(screen.getByRole("dialog", { name: /archive class/i }), { key: "Escape" });
     await waitFor(() => expect(archive).toHaveFocus());
+  });
+
+  it("restores focus to a surviving trigger after a successful refresh", async () => {
+    const client = api();
+    render(<AdminDashboard api={client} />);
+    const archive = await screen.findByRole("button", { name: /archive class grade 12 physics/i });
+    archive.focus();
+    fireEvent.click(archive);
+    fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: "Term completed" } });
+    fireEvent.click(screen.getByRole("button", { name: /^archive class$/i }));
+
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    await waitFor(() => expect(archive).toHaveFocus());
+  });
+
+  it("focuses the affected section heading when refresh removes the trigger", async () => {
+    const list = vi.fn().mockResolvedValueOnce(profiles).mockResolvedValue({ profiles: [profile("active")], nextCursor: null });
+    render(<AdminDashboard api={api({ listAdminProfiles: list })} />);
+    fireEvent.click(await screen.findByRole("button", { name: /approve teacher leena rao/i }));
+    fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: "Verified school lead" } });
+    fireEvent.click(screen.getByRole("button", { name: /^approve teacher$/i }));
+
+    const heading = await screen.findByRole("heading", { name: /profiles & teacher state/i });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("focuses the denied-state heading when authorization is lost during a mutation", async () => {
+    const client = api({ archiveAdminClassroom: vi.fn(async () => {
+      throw Object.assign(new Error("Forbidden"), { status: 403 });
+    }) });
+    render(<AdminDashboard api={client} />);
+    fireEvent.click(await screen.findByRole("button", { name: /archive class grade 12 physics/i }));
+    fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: "Reviewed" } });
+    fireEvent.click(screen.getByRole("button", { name: /^archive class$/i }));
+
+    const heading = await screen.findByRole("heading", { name: /administration unavailable/i });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(heading).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("keeps focus trapped and ignores Escape while a mutation is pending", async () => {
+    const pending = new Promise<never>(() => undefined);
+    render(<AdminDashboard api={api({ archiveAdminClassroom: vi.fn(() => pending) })} />);
+    fireEvent.click(await screen.findByRole("button", { name: /archive class grade 12 physics/i }));
+    const reason = screen.getByLabelText(/reason/i);
+    fireEvent.change(reason, { target: { value: "Term completed" } });
+    const confirm = screen.getByRole("button", { name: /^archive class$/i });
+    confirm.focus();
+    fireEvent.click(confirm);
+    const dialog = screen.getByRole("dialog", { name: /archive class/i });
+    expect(screen.getByRole("button", { name: /archiving/i })).toBeDisabled();
+
+    fireEvent.keyDown(dialog, { key: "Tab" });
+    expect(reason).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: "Tab", shiftKey: true });
+    expect(reason).toHaveFocus();
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(dialog).toBeVisible();
+    expect(reason).toHaveFocus();
   });
 
   it("supports suspend and restore through reasoned server mutations", async () => {

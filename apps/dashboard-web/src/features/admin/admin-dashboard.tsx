@@ -38,12 +38,19 @@ type AdminData = {
 };
 
 type CursorState = { profiles: string | null; classrooms: string | null; invitations: string | null; audit: string | null };
+type FocusTarget = keyof CursorState | "denied";
 type ActionKind = "approve" | "suspend" | "archive" | "restore" | "revoke" | "redeliver";
 type PendingAction = { kind: ActionKind; id: string; label: string };
 
 const EMPTY_DATA: AdminData = { profiles: [], classrooms: [], invitations: [], audit: [] };
 const EMPTY_CURSORS: CursorState = { profiles: null, classrooms: null, invitations: null, audit: null };
 const PAGE_SIZE = 50;
+const ADMIN_SECTION_HASHES = ["#admin-profiles", "#admin-classes", "#admin-invitations", "#admin-audit"] as const;
+
+function currentAdminSection(): string {
+  if (typeof window === "undefined") return "";
+  return ADMIN_SECTION_HASHES.includes(window.location.hash as (typeof ADMIN_SECTION_HASHES)[number]) ? window.location.hash : "";
+}
 
 function appendUnique<T extends { id?: string; firebaseUid?: string }>(current: T[], incoming: T[]): T[] {
   const keys = new Set(current.map((item) => item.id ?? item.firebaseUid));
@@ -112,7 +119,10 @@ function ReasonDialog({ action, busy, onCancel, onConfirm }: {
     const controls = Array.from(dialog.current?.querySelectorAll<HTMLElement>("button:not([disabled]), textarea:not([disabled])") ?? []);
     const first = controls[0];
     const last = controls.at(-1);
-    if (event.shiftKey && document.activeElement === first) {
+    if (!controls.includes(document.activeElement as HTMLElement)) {
+      event.preventDefault();
+      (event.shiftKey ? last : first)?.focus();
+    } else if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last?.focus();
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -156,10 +166,19 @@ export function AdminDashboard({ api: suppliedApi }: { api?: AdminDashboardApi }
   const [feedback, setFeedback] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const [refreshedAt, setRefreshedAt] = useState<Date | null>(null);
+  const [currentSection, setCurrentSection] = useState(currentAdminSection);
+  const [focusTarget, setFocusTarget] = useState<FocusTarget | null>(null);
   const actionTrigger = useRef<HTMLElement | null>(null);
+  const actionTriggerName = useRef<string | null>(null);
+  const deniedHeading = useRef<HTMLHeadingElement>(null);
+  const profileHeading = useRef<HTMLHeadingElement>(null);
+  const classroomHeading = useRef<HTMLHeadingElement>(null);
+  const invitationHeading = useRef<HTMLHeadingElement>(null);
+  const auditHeading = useRef<HTMLHeadingElement>(null);
 
-  const openAction = (next: PendingAction) => {
-    actionTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const openAction = (next: PendingAction, trigger: HTMLElement) => {
+    actionTrigger.current = trigger;
+    actionTriggerName.current = actionTrigger.current?.getAttribute("aria-label") ?? null;
     setAction(next);
   };
 
@@ -169,12 +188,30 @@ export function AdminDashboard({ api: suppliedApi }: { api?: AdminDashboardApi }
     queueMicrotask(() => trigger?.focus());
   };
 
+  useEffect(() => {
+    if (!focusTarget || action) return;
+    queueMicrotask(() => {
+      const fallback = {
+        denied: deniedHeading.current,
+        profiles: profileHeading.current,
+        classrooms: classroomHeading.current,
+        invitations: invitationHeading.current,
+        audit: auditHeading.current,
+      }[focusTarget];
+      const trigger = actionTrigger.current;
+      const triggerSurvived = trigger?.isConnected && trigger.getAttribute("aria-label") === actionTriggerName.current;
+      (triggerSurvived ? trigger : fallback)?.focus();
+      setFocusTarget(null);
+    });
+  }, [action, focusTarget, state]);
+
   const handleFailure = useCallback((error: unknown) => {
     const next = failureCopy(error);
     if (next.denied) {
       setData(EMPTY_DATA);
       setCursors(EMPTY_CURSORS);
       setState("denied");
+      setFocusTarget("denied");
     } else setState("error");
     setFailure(next.message);
   }, []);
@@ -195,6 +232,16 @@ export function AdminDashboard({ api: suppliedApi }: { api?: AdminDashboardApi }
   }, [api, handleFailure]);
 
   useEffect(() => { void refreshAll(); }, [refreshAll]);
+
+  useEffect(() => {
+    const syncSection = () => setCurrentSection(currentAdminSection());
+    window.addEventListener("hashchange", syncSection);
+    window.addEventListener("popstate", syncSection);
+    return () => {
+      window.removeEventListener("hashchange", syncSection);
+      window.removeEventListener("popstate", syncSection);
+    };
+  }, []);
 
   const refreshCollection = async (kind: keyof CursorState) => {
     if (kind === "profiles") {
@@ -246,6 +293,11 @@ export function AdminDashboard({ api: suppliedApi }: { api?: AdminDashboardApi }
     setActionBusy(true);
     setFeedback(null);
     setFailure(null);
+    const affectedCollection: keyof CursorState = action.kind === "approve" || action.kind === "suspend"
+      ? "profiles"
+      : action.kind === "archive" || action.kind === "restore"
+        ? "classrooms"
+        : "invitations";
     try {
       if (action.kind === "approve") { await api.approveTeacher(action.id, { reason }); await refreshCollection("profiles"); }
       if (action.kind === "suspend") { await api.suspendTeacher(action.id, { reason }); await refreshCollection("profiles"); }
@@ -255,9 +307,10 @@ export function AdminDashboard({ api: suppliedApi }: { api?: AdminDashboardApi }
       if (action.kind === "redeliver") { await api.redeliverAdminInvitation(action.id, { reason }); await refreshCollection("invitations"); }
       setFeedback(`${ACTION_COPY[action.kind].success}. Data refreshed from the server.`);
       setAction(null);
+      setFocusTarget(affectedCollection);
     } catch (error) {
       const next = failureCopy(error);
-      if (next.denied) { setData(EMPTY_DATA); setCursors(EMPTY_CURSORS); setState("denied"); setAction(null); }
+      if (next.denied) { setData(EMPTY_DATA); setCursors(EMPTY_CURSORS); setState("denied"); setAction(null); setFocusTarget("denied"); }
       setFailure(next.message);
     } finally { setActionBusy(false); }
   };
@@ -268,7 +321,7 @@ export function AdminDashboard({ api: suppliedApi }: { api?: AdminDashboardApi }
   });
 
   if (state === "loading") return <section className="admin-state" aria-busy="true"><span className="academic-spinner" aria-hidden="true" /><p role="status">Loading administration data…</p></section>;
-  if (state === "denied") return <section className="admin-state"><h2>Administration unavailable</h2><p role="alert">{failure}</p></section>;
+  if (state === "denied") return <section className="admin-state"><h2 ref={deniedHeading} tabIndex={-1}>Administration unavailable</h2><p role="alert">{failure}</p></section>;
 
   return (
     <section className="admin-dashboard" aria-busy={actionBusy}>
@@ -277,14 +330,22 @@ export function AdminDashboard({ api: suppliedApi }: { api?: AdminDashboardApi }
         <button className="academic-button academic-button--secondary" type="button" onClick={() => void refreshAll()}>Refresh all</button>
       </div>
       <nav className="admin-section-nav" aria-label="Administration sections">
-        <a href="#admin-profiles">Profiles</a><a href="#admin-classes">Classes</a><a href="#admin-invitations">Invitations</a><a href="#admin-audit">Audit</a>
+        {ADMIN_SECTION_HASHES.map((href) => {
+          const label = { "#admin-profiles": "Profiles", "#admin-classes": "Classes", "#admin-invitations": "Invitations", "#admin-audit": "Audit" }[href];
+          const select = () => {
+            window.history.pushState({}, "", href);
+            setCurrentSection(href);
+            window.dispatchEvent(new HashChangeEvent("hashchange"));
+          };
+          return <a key={href} href={href} aria-current={currentSection === href ? "location" : undefined} onClick={(event) => { event.preventDefault(); select(); }} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); select(); } }}>{label}</a>;
+        })}
       </nav>
       {refreshedAt ? <p className="academic-freshness">Last refreshed {refreshedAt.toLocaleTimeString()} · server-authorized data</p> : null}
       {feedback ? <p className="academic-feedback academic-feedback--success" role="status">✓ {feedback}</p> : null}
       {failure ? <p className="academic-feedback academic-feedback--error" role="alert">! {failure}</p> : null}
 
       <article className="academic-card admin-panel" id="admin-profiles">
-        <div className="admin-panel__header"><div><p className="academic-overline">Access control</p><h2>Profiles &amp; Teacher state</h2></div>
+        <div className="admin-panel__header"><div><p className="academic-overline">Access control</p><h2 ref={profileHeading} tabIndex={-1}>Profiles &amp; Teacher state</h2></div>
           <label className="academic-search"><span>Search loaded profiles</span><input value={search} onChange={(event) => setSearch(event.target.value)} type="search" placeholder="Name, email, or UID" /></label>
         </div>
         <div className="academic-table-wrap"><table><caption>Redacted dashboard profiles loaded from the Admin API</caption><thead><tr><th scope="col">Profile</th><th scope="col">Roles</th><th scope="col">Updated</th><th scope="col">Actions</th></tr></thead>
@@ -292,34 +353,34 @@ export function AdminDashboard({ api: suppliedApi }: { api?: AdminDashboardApi }
             const teacher = item.roles.teacher;
             const label = item.displayName ?? item.verifiedEmail ?? item.firebaseUid;
             return <tr key={item.firebaseUid}><td><strong>{label}</strong><small>{item.verifiedEmail ?? "Verified email unavailable"}</small></td><td><div className="academic-status-list">{Object.entries(item.roles).map(([role, status]) => <span key={role}><b>{role}</b><Status value={status} /></span>)}</div></td><td>{new Date(item.updatedAt).toLocaleDateString()}</td><td><div className="academic-row-actions">
-              {teacher === "pending" ? <button type="button" onClick={() => openAction({ kind: "approve", id: item.firebaseUid, label })} aria-label={`Approve Teacher ${label}`}>Approve</button> : null}
-              {teacher === "active" ? <button type="button" onClick={() => openAction({ kind: "suspend", id: item.firebaseUid, label })} aria-label={`Suspend Teacher ${label}`}>Suspend</button> : null}
+              {teacher === "pending" ? <button type="button" onClick={(event) => openAction({ kind: "approve", id: item.firebaseUid, label }, event.currentTarget)} aria-label={`Approve Teacher ${label}`}>Approve</button> : null}
+              {teacher === "active" ? <button type="button" onClick={(event) => openAction({ kind: "suspend", id: item.firebaseUid, label }, event.currentTarget)} aria-label={`Suspend Teacher ${label}`}>Suspend</button> : null}
             </div></td></tr>;
           }) : <tr><td colSpan={4} className="academic-empty">No loaded profiles match this view.</td></tr>}</tbody></table></div>
         {cursors.profiles ? <button className="academic-load-more" type="button" onClick={() => void loadMore("profiles")}>Load more profiles</button> : null}
       </article>
 
       <article className="academic-card admin-panel" id="admin-classes">
-        <div className="admin-panel__header"><div><p className="academic-overline">Class metadata</p><h2>Classes</h2></div></div>
+        <div className="admin-panel__header"><div><p className="academic-overline">Class metadata</p><h2 ref={classroomHeading} tabIndex={-1}>Classes</h2></div></div>
         <div className="academic-table-wrap"><table><caption>Teacher-owned class metadata</caption><thead><tr><th scope="col">Class</th><th scope="col">Owner UID</th><th scope="col">Status</th><th scope="col">Actions</th></tr></thead><tbody>
           {data.classrooms.length ? data.classrooms.map((item) => <tr key={item.id}><td><strong>{item.name}</strong><small>{item.id}</small></td><td>{item.ownerUid}</td><td><Status value={item.status} /></td><td><div className="academic-row-actions">
-            <button type="button" onClick={() => openAction({ kind: item.status === "active" ? "archive" : "restore", id: item.id, label: item.name })} aria-label={`${item.status === "active" ? "Archive" : "Restore"} class ${item.name}`}>{item.status === "active" ? "Archive" : "Restore"}</button>
+            <button type="button" onClick={(event) => openAction({ kind: item.status === "active" ? "archive" : "restore", id: item.id, label: item.name }, event.currentTarget)} aria-label={`${item.status === "active" ? "Archive" : "Restore"} class ${item.name}`}>{item.status === "active" ? "Archive" : "Restore"}</button>
           </div></td></tr>) : <tr><td colSpan={4} className="academic-empty">No classes are available.</td></tr>}
         </tbody></table></div>{cursors.classrooms ? <button className="academic-load-more" type="button" onClick={() => void loadMore("classrooms")}>Load more classes</button> : null}
       </article>
 
       <article className="academic-card admin-panel" id="admin-invitations">
-        <div className="admin-panel__header"><div><p className="academic-overline">Delivery state</p><h2>Invitations</h2></div></div>
+        <div className="admin-panel__header"><div><p className="academic-overline">Delivery state</p><h2 ref={invitationHeading} tabIndex={-1}>Invitations</h2></div></div>
         <div className="academic-table-wrap"><table><caption>Redacted invitation status and delivery intent</caption><thead><tr><th scope="col">Invitation</th><th scope="col">Class</th><th scope="col">State</th><th scope="col">Actions</th></tr></thead><tbody>
           {data.invitations.length ? data.invitations.map((item) => <tr key={item.id}><td><strong>{item.id}</strong><small>Expires {new Date(item.expiresAt).toLocaleDateString()}</small></td><td>{item.classroomId}</td><td><div className="academic-status-list"><Status value={item.status} /><Status value={item.delivery} /></div></td><td><div className="academic-row-actions">
-            {item.status === "pending" ? <button type="button" onClick={() => openAction({ kind: "revoke", id: item.id, label: item.id })} aria-label={`Revoke invitation ${item.id}`}>Revoke</button> : null}
-            {item.status === "pending" ? <button type="button" onClick={() => openAction({ kind: "redeliver", id: item.id, label: item.id })} aria-label={`Request redelivery for invitation ${item.id}`}>Request redelivery</button> : null}
+            {item.status === "pending" ? <button type="button" onClick={(event) => openAction({ kind: "revoke", id: item.id, label: item.id }, event.currentTarget)} aria-label={`Revoke invitation ${item.id}`}>Revoke</button> : null}
+            {item.status === "pending" ? <button type="button" onClick={(event) => openAction({ kind: "redeliver", id: item.id, label: item.id }, event.currentTarget)} aria-label={`Request redelivery for invitation ${item.id}`}>Request redelivery</button> : null}
           </div></td></tr>) : <tr><td colSpan={4} className="academic-empty">No invitations are available.</td></tr>}
         </tbody></table></div>{cursors.invitations ? <button className="academic-load-more" type="button" onClick={() => void loadMore("invitations")}>Load more invitations</button> : null}
       </article>
 
       <article className="academic-card admin-panel" id="admin-audit">
-        <div className="admin-panel__header"><div><p className="academic-overline">Immutable record</p><h2>Audit feed</h2></div></div>
+        <div className="admin-panel__header"><div><p className="academic-overline">Immutable record</p><h2 ref={auditHeading} tabIndex={-1}>Audit feed</h2></div></div>
         <div className="academic-table-wrap"><table><caption>Immutable, redacted administrative audit events</caption><thead><tr><th scope="col">Event</th><th scope="col">Target</th><th scope="col">Reason</th><th scope="col">Created</th></tr></thead><tbody>
           {data.audit.length ? data.audit.map((item) => <tr key={item.id}><td><strong>{item.action}</strong><small>{item.correlationId}</small></td><td>{item.targetType}: {item.targetId}</td><td>{item.reason ?? "System action"}</td><td>{new Date(item.createdAt).toLocaleString()}</td></tr>) : <tr><td colSpan={4} className="academic-empty">No audit events are available.</td></tr>}
         </tbody></table></div>{cursors.audit ? <button className="academic-load-more" type="button" onClick={() => void loadMore("audit")}>Load more audit events</button> : null}

@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
 
+import "@fontsource-variable/inter/wght.css";
+
 import "./globals.css";
 
 export const metadata: Metadata = {

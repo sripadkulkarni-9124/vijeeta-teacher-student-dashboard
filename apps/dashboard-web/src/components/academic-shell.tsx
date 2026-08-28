@@ -1,4 +1,6 @@
-import type { ReactNode } from "react";
+"use client";
+
+import { useEffect, useState, type ReactNode } from "react";
 
 import type { ConnectedDashboardRole } from "@vijeeta/api-contracts";
 
@@ -31,15 +33,36 @@ export function AcademicShell({
   workspaceActions?: readonly ConnectedDashboardRole[];
   onWorkspaceSwitch?: (role: ConnectedDashboardRole) => void;
 }) {
+  const [activeHref, setActiveHref] = useState(currentHref);
+  useEffect(() => {
+    const syncLocation = () => {
+      const browserHref = `${window.location.pathname}${window.location.hash}`;
+      setActiveHref(navigation.some((item) => item.href === browserHref) ? browserHref : currentHref);
+    };
+    syncLocation();
+    window.addEventListener("hashchange", syncLocation);
+    window.addEventListener("popstate", syncLocation);
+    return () => {
+      window.removeEventListener("hashchange", syncLocation);
+      window.removeEventListener("popstate", syncLocation);
+    };
+  }, [currentHref, navigation]);
   const displayName = profile.displayName ?? profile.email ?? "Signed-in user";
   const roleLabel = `${profile.activeRole[0]!.toUpperCase()}${profile.activeRole.slice(1)} workspace`;
   const links = (mobile = false) => navigation.map((item) => {
-    const active = item.href === currentHref;
+    const active = item.href === activeHref;
     return (
       <a
         className={mobile ? "academic-shell__mobile-link" : "academic-shell__nav-link"}
         data-active={active ? "true" : "false"}
         href={item.href}
+        onClick={(event) => {
+          if (!item.href.startsWith("/")) return;
+          event.preventDefault();
+          window.history.pushState({}, "", item.href);
+          setActiveHref(item.href);
+          window.dispatchEvent(new HashChangeEvent("hashchange"));
+        }}
         key={`${mobile ? "mobile" : "desktop"}-${item.href}`}
         aria-current={active ? "page" : undefined}
       >
