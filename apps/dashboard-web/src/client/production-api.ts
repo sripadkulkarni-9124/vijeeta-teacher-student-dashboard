@@ -13,6 +13,7 @@ export interface ProductionAuthSession {
   getIdToken(forceRefresh?: boolean): Promise<string>;
   signInWithEmailPassword(email: string, password: string): Promise<ProductionUser>;
   createAccountWithEmailPassword?(email: string, password: string): Promise<ProductionUser>;
+  isEmailVerified?(): Promise<boolean>;
   signInWithGoogle(): Promise<ProductionUser>;
   signOut(): Promise<void>;
   subscribe(listener: (user: ProductionUser | null) => void): () => void;

@@ -277,6 +277,10 @@ export function ConnectedDashboardNavigation({
   const [busy, setBusy] = useState(false);
   const [currentRoute, setCurrentRoute] = useState<DashboardRequestedRoute>(requestedRoute);
   const [invitationLinkState, setInvitationLinkState] = useState<"unchecked" | "captured" | "missing">("unchecked");
+  const [authMode, setAuthMode] = useState<"sign_in" | "sign_up">("sign_in");
+  const [credentials, setCredentials] = useState({ email: "", password: "" });
+  const [signUpRole, setSignUpRole] = useState<"student" | "teacher">("student");
+  const [awaitingVerification, setAwaitingVerification] = useState<{ email: string; role: "student" | "teacher" } | null>(null);
   const [invitation, setInvitation] = useState<InspectInvitationResponse | null>(null);
   const [invitationError, setInvitationError] = useState<string | null>(null);
   const authorizationVersion = useRef(0);
@@ -360,12 +364,63 @@ export function ConnectedDashboardNavigation({
     if (guard.redirect !== null) replacePath(guard.redirect);
   }, [currentRoute, profile, status, user]);
 
+  /** Re-checks verification, then applies the role chosen at sign-up. */
+  const completeSignUp = async () => {
+    if (awaitingVerification === null) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const verified = await api.auth.isEmailVerified?.();
+      if (verified !== true) {
+        setError("This address is not verified yet. Open the link in your email, then try again.");
+        return;
+      }
+      await api.onboard(awaitingVerification.role);
+      const current = api.auth.currentUser;
+      setAwaitingVerification(null);
+      if (current !== null) await loadProfile(current);
+    } catch (caught) {
+      setError(connectedMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const signIn = async () => {
     setBusy(true);
     setError(null);
     try { await loadProfile(await api.auth.signInWithGoogle()); }
     catch (caught) { setError(connectedMessage(caught)); setStatus("signed_out"); }
     finally { setBusy(false); }
+  };
+
+  /**
+   * Sign-up captures the role up front and onboards with it immediately, so a
+   * new account lands in its workspace rather than on a second screen. The role
+   * is still only a request: the server decides, and Teacher stays pending
+   * until an Admin approves it.
+   */
+  const submitCredentials = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      if (authMode === "sign_in") {
+        await loadProfile(await api.auth.signInWithEmailPassword(credentials.email, credentials.password));
+        return;
+      }
+      const created = api.auth.createAccountWithEmailPassword;
+      if (created === undefined) throw new Error("Account creation is not enabled for this application");
+      await created(credentials.email, credentials.password);
+      // The server refuses to onboard an unverified principal, so hold the
+      // chosen role until the address is confirmed rather than failing here.
+      setAwaitingVerification({ email: credentials.email, role: signUpRole });
+      setCredentials({ email: "", password: "" });
+    } catch (caught) {
+      setError(connectedMessage(caught));
+      setStatus("signed_out");
+    } finally {
+      setBusy(false);
+    }
   };
   const acceptInvitation = async () => {
     const token = invitationToken.current;
@@ -421,9 +476,51 @@ export function ConnectedDashboardNavigation({
 
   if (status === "loading") return <main className="academic-auth-screen" aria-busy="true"><section className="academic-auth-card"><span className="academic-spinner" aria-hidden="true" /><p role="status">Checking your dashboard access…</p></section></main>;
   if (status === "error") return <main className="academic-auth-screen"><section className="academic-auth-card"><h1>Access could not be verified</h1><p role="alert">{error}</p></section></main>;
+  if (awaitingVerification !== null) return (
+    <main className="academic-auth-screen"><section className="academic-auth-card"><p className="academic-auth-brand">ViJEEta</p>
+      <h1>Verify your email</h1>
+      <p>We sent a verification link to {awaitingVerification.email}. Open it, then continue as a {awaitingVerification.role}.</p>
+      <button className="academic-button academic-button--primary" disabled={busy} onClick={() => void completeSignUp()} type="button">
+        {busy ? "Checking…" : "I have verified my email"}
+      </button>
+      <button className="academic-button academic-button--quiet" disabled={busy} onClick={() => { setAwaitingVerification(null); setError(null); }} type="button">Back to sign in</button>
+      {error ? <p role="alert">{error}</p> : null}
+    </section></main>
+  );
   if (user === null || status === "signed_out") return (
-    <main className="academic-auth-screen"><section className="academic-auth-card"><p className="academic-auth-brand">ViJEEta</p><h1>Sign in to Vijeeta</h1><p>Teachers and students use the same secure Google sign-in.</p>
+    <main className="academic-auth-screen"><section className="academic-auth-card academic-auth-card--wide"><p className="academic-auth-brand">ViJEEta</p>
+      <h1>{authMode === "sign_in" ? "Sign in to Vijeeta" : "Create your Vijeeta account"}</h1>
+      <p>{authMode === "sign_in" ? "Teachers and students use the same secure sign-in." : "Choose how you will use Vijeeta. Admin access cannot be selected here."}</p>
+
+      <div className="academic-auth-tabs" role="tablist" aria-label="Sign in or sign up">
+        <button aria-selected={authMode === "sign_in"} className="academic-auth-tab" onClick={() => { setAuthMode("sign_in"); setError(null); }} role="tab" type="button">Sign in</button>
+        <button aria-selected={authMode === "sign_up"} className="academic-auth-tab" onClick={() => { setAuthMode("sign_up"); setError(null); }} role="tab" type="button">Sign up</button>
+      </div>
+
       <button className="academic-google-button" type="button" disabled={busy} onClick={() => void signIn()}><span aria-hidden="true">G</span>{busy ? "Signing in…" : "Continue with Google"}</button>
+
+      <form className="academic-auth-form" onSubmit={(event) => { event.preventDefault(); void submitCredentials(); }}>
+        <label className="academic-field" htmlFor="auth-email">Email
+          <input autoComplete="email" id="auth-email" maxLength={320} onChange={(event) => setCredentials((current) => ({ ...current, email: event.target.value }))} required type="email" value={credentials.email} />
+        </label>
+        <label className="academic-field" htmlFor="auth-password">Password
+          <input autoComplete={authMode === "sign_in" ? "current-password" : "new-password"} id="auth-password" minLength={8} maxLength={128} onChange={(event) => setCredentials((current) => ({ ...current, password: event.target.value }))} required type="password" value={credentials.password} />
+        </label>
+
+        {authMode === "sign_up" ? (
+          <fieldset className="academic-role-options">
+            <legend>I am a</legend>
+            <label><input checked={signUpRole === "student"} name="signup-role" onChange={() => setSignUpRole("student")} type="radio" value="student" /><strong>Student</strong><small>Join classes and take assigned tests.</small></label>
+            <label><input checked={signUpRole === "teacher"} name="signup-role" onChange={() => setSignUpRole("teacher")} type="radio" value="teacher" /><strong>Teacher</strong><small>Request approval to manage classes.</small></label>
+          </fieldset>
+        ) : null}
+
+        <button className="academic-button academic-button--primary" disabled={busy} type="submit">
+          {busy ? "Working…" : authMode === "sign_in" ? "Sign in" : "Create account"}
+        </button>
+      </form>
+
+      {authMode === "sign_up" ? <p className="academic-subtitle">An email-and-password account starts unverified. Most actions need a verified email, so Google sign-in is the quickest way in.</p> : null}
       {error ? <p role="alert">{error}</p> : null}
     </section></main>
   );

@@ -6,8 +6,11 @@ import {
   inMemoryPersistence,
   initializeAuth,
   connectAuthEmulator,
+  createUserWithEmailAndPassword,
   onAuthStateChanged,
+  sendEmailVerification,
   setPersistence,
+  signInWithEmailAndPassword,
   signInWithPopup,
   signOut,
   type Auth,
@@ -17,6 +20,8 @@ interface FirebaseUserLike {
   uid: string;
   email: string | null;
   displayName: string | null;
+  emailVerified?: boolean;
+  reload?(): Promise<void>;
   getIdToken(forceRefresh?: boolean): Promise<string>;
 }
 
@@ -28,6 +33,9 @@ export interface FirebaseRuntime {
   auth: FirebaseAuthLike;
   GoogleAuthProvider: new () => unknown;
   signInWithPopup(auth: FirebaseAuthLike, provider: unknown): Promise<{ user: FirebaseUserLike }>;
+  signInWithEmailAndPassword(auth: FirebaseAuthLike, email: string, password: string): Promise<{ user: FirebaseUserLike }>;
+  createUserWithEmailAndPassword(auth: FirebaseAuthLike, email: string, password: string): Promise<{ user: FirebaseUserLike }>;
+  sendEmailVerification(user: FirebaseUserLike): Promise<void>;
   signOut(auth: FirebaseAuthLike): Promise<void>;
   onAuthStateChanged(auth: FirebaseAuthLike, listener: (user: FirebaseUserLike | null) => void): () => void;
 }
@@ -84,6 +92,9 @@ async function loadRuntime(): Promise<FirebaseRuntime> {
     auth,
     GoogleAuthProvider,
     signInWithPopup: signInWithPopup as unknown as FirebaseRuntime["signInWithPopup"],
+    signInWithEmailAndPassword: signInWithEmailAndPassword as unknown as FirebaseRuntime["signInWithEmailAndPassword"],
+    createUserWithEmailAndPassword: createUserWithEmailAndPassword as unknown as FirebaseRuntime["createUserWithEmailAndPassword"],
+    sendEmailVerification: sendEmailVerification as unknown as FirebaseRuntime["sendEmailVerification"],
     signOut: signOut as unknown as FirebaseRuntime["signOut"],
     onAuthStateChanged: onAuthStateChanged as unknown as FirebaseRuntime["onAuthStateChanged"],
   };
@@ -112,8 +123,31 @@ export function createFirebaseAuth(options: { loadRuntime?: () => Promise<Fireba
       currentUser = userFromFirebase(user);
       return user.getIdToken(forceRefresh);
     },
-    async signInWithEmailPassword() {
-      throw new Error("Email/password sign-in is not enabled for this application");
+    async signInWithEmailPassword(email: string, password: string) {
+      const loaded = await requireRuntime();
+      const result = await loaded.signInWithEmailAndPassword(loaded.auth, email, password);
+      currentUser = userFromFirebase(result.user);
+      return currentUser!;
+    },
+    /**
+     * The server refuses to onboard an unverified principal, so account
+     * creation sends the verification email immediately. Firebase delivers it,
+     * not this service. Google sign-in stays the path that yields a verified
+     * principal without a separate step.
+     */
+    async createAccountWithEmailPassword(email: string, password: string) {
+      const loaded = await requireRuntime();
+      const result = await loaded.createUserWithEmailAndPassword(loaded.auth, email, password);
+      await loaded.sendEmailVerification(result.user);
+      currentUser = userFromFirebase(result.user);
+      return currentUser!;
+    },
+    async isEmailVerified() {
+      const loaded = await requireRuntime();
+      const user = loaded.auth.currentUser;
+      if (!user) return false;
+      await user.reload?.();
+      return user.emailVerified === true;
     },
     async signInWithGoogle() {
       const loaded = await requireRuntime();

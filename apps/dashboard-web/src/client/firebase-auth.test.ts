@@ -15,6 +15,9 @@ function runtime() {
   const loaded: FirebaseRuntime = {
     auth,
     GoogleAuthProvider: class {},
+    sendEmailVerification: vi.fn(async () => undefined),
+    signInWithEmailAndPassword: vi.fn(async () => ({ user: firebaseUser })),
+    createUserWithEmailAndPassword: vi.fn(async () => ({ user: firebaseUser })),
     signInWithPopup: vi.fn(async () => ({ user: firebaseUser })),
     signOut: vi.fn(async () => undefined),
     onAuthStateChanged: vi.fn((_auth, next) => {

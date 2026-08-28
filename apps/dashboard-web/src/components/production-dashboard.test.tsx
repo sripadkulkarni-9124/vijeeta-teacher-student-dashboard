@@ -177,6 +177,59 @@ describe("ProductionDashboard", () => {
     expect(await screen.findByRole("heading", { name: new RegExp(`${activeRole} workspace`, "i") })).toBeVisible();
   });
 
+  it("creates an account with the chosen role and onboards with it", async () => {
+    window.history.replaceState({}, "", "/");
+    const created = { uid: "new-uid", email: "learner@example.test", displayName: null };
+    const teacher = serverProfile({ roles: { teacher: "pending" }, activeRole: null });
+    const auth = api().auth;
+    const connected: ConnectedNavigationApi = {
+      auth: {
+        ...auth,
+        currentUser: null,
+        subscribe: () => () => undefined,
+        createAccountWithEmailPassword: vi.fn(async () => created),
+        isEmailVerified: vi.fn(async () => true),
+        signInWithEmailPassword: vi.fn(),
+      },
+      getProfile: vi.fn(async () => teacher),
+      onboard: vi.fn(async () => teacher),
+      setActiveRole: vi.fn(),
+      inspectInvitation: vi.fn(),
+      acceptInvitation: vi.fn(),
+    };
+    render(<ConnectedDashboardNavigation api={connected} requestedRoute="root" />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /sign up/i }));
+    fireEvent.change(screen.getByLabelText(/email/i), { target: { value: "learner@example.test" } });
+    fireEvent.change(screen.getByLabelText(/password/i), { target: { value: "a-long-passphrase" } });
+    fireEvent.click(screen.getByRole("radio", { name: /teacher/i }));
+    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => expect(connected.auth.createAccountWithEmailPassword).toHaveBeenCalledWith("learner@example.test", "a-long-passphrase"));
+    // The server refuses an unverified principal, so the role is held until the
+    // address is confirmed rather than onboarding immediately.
+    expect(await screen.findByRole("heading", { name: /verify your email/i })).toBeVisible();
+    expect(connected.onboard).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /i have verified my email/i }));
+    await waitFor(() => expect(connected.onboard).toHaveBeenCalledWith("teacher"));
+  });
+
+  it("defaults sign-up to Student and never offers Admin", async () => {
+    window.history.replaceState({}, "", "/");
+    const auth = api().auth;
+    const connected: ConnectedNavigationApi = {
+      auth: { ...auth, currentUser: null, subscribe: () => () => undefined },
+      getProfile: vi.fn(), onboard: vi.fn(), setActiveRole: vi.fn(),
+      inspectInvitation: vi.fn(), acceptInvitation: vi.fn(),
+    };
+    render(<ConnectedDashboardNavigation api={connected} requestedRoute="root" />);
+
+    fireEvent.click(await screen.findByRole("tab", { name: /sign up/i }));
+    expect(screen.getByRole("radio", { name: /student/i })).toBeChecked();
+    expect(screen.queryByRole("radio", { name: /admin/i })).not.toBeInTheDocument();
+  });
+
   it("inspects a captured invitation and joins the class", async () => {
     window.history.replaceState({}, "", "/invite#token=invite-1.secret");
     const student = serverProfile({ roles: { student: "active" }, activeRole: "student" });
