@@ -114,7 +114,7 @@ describe("connected same-origin API", () => {
     await api.listClasses({ limit: 25, cursor: "next page" });
     await api.createClassroom({ name: "Physics" });
     await api.getClassroom("class/1");
-    await api.archiveClassroom("class/1");
+    await api.archiveClassroom("class/1", { reason: "Archived by the class teacher" });
     await api.getClassroomRoster("class/1", { limit: 10 });
 
     expect(calls.map(({ input, init }) => [init.method ?? "GET", input])).toEqual([
@@ -158,10 +158,10 @@ describe("connected same-origin API", () => {
     await api.listAdminClassrooms(); await api.archiveAdminClassroom("class/1", reason); await api.restoreAdminClassroom("class/1", reason);
     await api.listAdminInvitations(); await api.revokeAdminInvitation("invite/1", reason); await api.redeliverAdminInvitation("invite/1", reason); await api.listAdminAudit();
     await api.inviteClassroomMember("class/1", { email: "learner@example.test" });
-    await api.revokeClassroomInvitation("class/1", "invite/1"); await api.redeliverClassroomInvitation("class/1", "invite/1");
+    await api.revokeClassroomInvitation("class/1", "invite/1", reason); await api.redeliverClassroomInvitation("class/1", "invite/1", reason);
     await api.inspectInvitation("invite-1.secret"); await api.acceptInvitation("invite-1.secret");
     await api.listAssignments("class/1");
-    await api.createAssignment("class/1", { jobId: "job-1", openAt: NOW, closeAt: null, solutions: "never" });
+    await api.createAssignment("class/1", { jobId: "job-1", openAt: NOW, closeAt: null, solutions: "never" }, "11111111-1111-4111-8111-111111111111");
     await api.launchAssignment("assignment/1"); await api.getAssignmentInsights("assignment/1");
     await api.getStudentAssignmentInsights("assignment/1", "student/1");
     await api.reconcileAssignment("assignment/1", { resolution: "link_existing_share", shareId: "share-1", reason: "Verified in V3" });
@@ -175,6 +175,35 @@ describe("connected same-origin API", () => {
       ["POST", "/api/classes/class%2F1/assignments"], ["GET", "/api/assignments/assignment%2F1/launch"], ["GET", "/api/assignments/assignment%2F1/insights"],
       ["GET", "/api/assignments/assignment%2F1/students/student%2F1/insights"], ["POST", "/api/assignments/assignment%2F1/reconcile"],
     ]);
+  });
+
+  it("sends the body and headers each mutating route actually requires", async () => {
+    const classroom = { id: "class-1", ownerUid: "uid-1", name: "Physics", status: "active", createdAt: NOW, updatedAt: NOW };
+    const invite = { id: "invite-1", classroomId: "class-1", ownerUid: "uid-1", tokenVersion: 1, expiresAt: NOW, status: "pending", delivery: "sent", acceptedUid: null, acceptedAt: null, createdAt: NOW, updatedAt: NOW };
+    const assignment = { id: "assignment-1", classroomId: "class-1", ownerUid: "uid-1", jobId: "job-1", recipientCount: 1, openAt: NOW, closeAt: null, solutions: "never", createdAt: NOW, updatedAt: NOW, state: "active", testId: "test-1", shareId: "share-1", reconciliation: null };
+    const outputs: unknown[] = [{ classroom }, { invite }, { invite }, { assignment }];
+    const calls: Array<{ url: string; init: RequestInit }> = [];
+    const transport = vi.fn(async (input: RequestInfo | URL, init: RequestInit = {}) => {
+      calls.push({ url: String(input), init });
+      return response(outputs.shift(), 200, `https://dashboard.example${String(input)}`);
+    });
+    const api = createConnectedApi({ getIdToken: async () => "token", transport, origin: "https://dashboard.example" });
+
+    await api.archiveClassroom("class-1", { reason: "Archived by the class teacher" });
+    await api.revokeClassroomInvitation("class-1", "invite-1", { reason: "Revoked by the class teacher" });
+    await api.redeliverClassroomInvitation("class-1", "invite-1", { reason: "Redelivery requested" });
+    await api.createAssignment("class-1", { jobId: "job-1", openAt: NOW, closeAt: null, solutions: "never" }, "11111111-1111-4111-8111-111111111111");
+
+    // Without a JSON body these three are rejected as 415 before the reason is read.
+    calls.slice(0, 3).forEach(({ init }) => {
+      const headers = init.headers as Record<string, string>;
+      expect(headers["content-type"]).toBe("application/json");
+      expect(JSON.parse(String(init.body)).reason).toBeTruthy();
+    });
+    // Without this header assignment creation is rejected as 400.
+    const assignmentCall = calls[3]!;
+    expect((assignmentCall.init.headers as Record<string, string>)["idempotency-key"]).toBe("11111111-1111-4111-8111-111111111111");
+    expect(JSON.parse(String(assignmentCall.init.body)).jobId).toBe("job-1");
   });
 
   it("rejects redirects, cross-origin responses, oversized payloads, and non-JSON without leaking Bearer values", async () => {

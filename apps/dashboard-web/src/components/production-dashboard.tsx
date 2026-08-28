@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import type { ConnectedDashboardRole, DashboardProfileV2 } from "@vijeeta/api-contracts";
+import type { ConnectedDashboardRole, DashboardProfileV2, InspectInvitationResponse } from "@vijeeta/api-contracts";
 
 import { createConnectedApi, ConnectedApiError } from "@/client/connected-api";
 import { createFirebaseAuth } from "@/client/firebase-auth";
@@ -32,6 +32,8 @@ export interface ConnectedNavigationApi {
   getProfile(): Promise<DashboardProfileV2>;
   onboard(role: "student" | "teacher"): Promise<DashboardProfileV2>;
   setActiveRole(role: ConnectedDashboardRole): Promise<DashboardProfileV2>;
+  inspectInvitation(token: string): Promise<InspectInvitationResponse>;
+  acceptInvitation(token: string): Promise<unknown>;
 }
 
 export function resolveDashboardRoute(input: {
@@ -234,7 +236,14 @@ function defaultConnectedNavigationApi(): ConnectedNavigationApi {
   const connected = createConnectedApi({
     getIdToken: (forceRefresh) => auth.getIdToken(forceRefresh),
   });
-  return { auth, getProfile: connected.getProfile, onboard: connected.onboard, setActiveRole: connected.setActiveRole };
+  return {
+    auth,
+    getProfile: connected.getProfile,
+    onboard: connected.onboard,
+    setActiveRole: connected.setActiveRole,
+    inspectInvitation: connected.inspectInvitation,
+    acceptInvitation: connected.acceptInvitation,
+  };
 }
 
 function replacePath(path: string): void {
@@ -268,6 +277,8 @@ export function ConnectedDashboardNavigation({
   const [busy, setBusy] = useState(false);
   const [currentRoute, setCurrentRoute] = useState<DashboardRequestedRoute>(requestedRoute);
   const [invitationLinkState, setInvitationLinkState] = useState<"unchecked" | "captured" | "missing">("unchecked");
+  const [invitation, setInvitation] = useState<InspectInvitationResponse | null>(null);
+  const [invitationError, setInvitationError] = useState<string | null>(null);
   const authorizationVersion = useRef(0);
   const invitationToken = useRef<string | null | undefined>(undefined);
 
@@ -328,6 +339,22 @@ export function ConnectedDashboardNavigation({
   }, [api, loadProfile]);
 
   useEffect(() => {
+    if (currentRoute !== "invite" || status !== "ready" || user === null) return;
+    const token = invitationToken.current;
+    if (!token || invitation !== null) return;
+    let active = true;
+    void (async () => {
+      try {
+        const inspected = await api.inspectInvitation(token);
+        if (active) setInvitation(inspected);
+      } catch (caught) {
+        if (active) setInvitationError(connectedMessage(caught));
+      }
+    })();
+    return () => { active = false; };
+  }, [api, currentRoute, invitation, status, user]);
+
+  useEffect(() => {
     if (status !== "ready") return;
     const guard = resolveProtectedRoute(currentRoute, user !== null, profile);
     if (guard.redirect !== null) replacePath(guard.redirect);
@@ -340,6 +367,24 @@ export function ConnectedDashboardNavigation({
     catch (caught) { setError(connectedMessage(caught)); setStatus("signed_out"); }
     finally { setBusy(false); }
   };
+  const acceptInvitation = async () => {
+    const token = invitationToken.current;
+    if (!token) return;
+    setBusy(true);
+    setInvitationError(null);
+    try {
+      await api.acceptInvitation(token);
+      invitationToken.current = null;
+      if (user !== null) await loadProfile(user);
+      setCurrentRoute("student");
+      replacePath("/student");
+    } catch (caught) {
+      setInvitationError(connectedMessage(caught));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const signOut = async () => {
     authorizationVersion.current += 1;
     setUser(null);
@@ -387,7 +432,21 @@ export function ConnectedDashboardNavigation({
   const guard = resolveProtectedRoute(currentRoute, true, profile);
   if (!guard.render) return <main className="academic-auth-screen"><section className="academic-auth-card" aria-busy="true"><p role="status">Redirecting to your authorized workspace…</p></section></main>;
   if (currentRoute === "invite") return (
-    <main className="academic-auth-screen"><section className="academic-auth-card"><p className="academic-auth-brand">ViJEEta</p><h1>Classroom invitation</h1><p>{invitationLinkState === "missing" ? "Open the invitation link from your email to continue." : "Your invitation is held only in this tab while we verify it."}</p></section></main>
+    <main className="academic-auth-screen"><section className="academic-auth-card"><p className="academic-auth-brand">ViJEEta</p><h1>Classroom invitation</h1>
+      {invitationLinkState === "missing" ? <p>Open the invitation link from your email to continue.</p> : null}
+      {invitationLinkState === "captured" && invitation === null && invitationError === null ? <p role="status">Checking your invitation…</p> : null}
+      {invitationError !== null ? <p role="alert">{invitationError}</p> : null}
+      {invitation !== null ? (
+        <>
+          <p>{invitation.teacherDisplayName} invited you to join {invitation.classroomName}.</p>
+          {invitation.targetEmailMatches ? (
+            <button className="academic-button academic-button--primary" disabled={busy} onClick={() => void acceptInvitation()} type="button">
+              {busy ? "Joining…" : "Join class"}
+            </button>
+          ) : <p role="alert">This invitation was sent to a different email address. Sign in with the address the invitation was sent to.</p>}
+        </>
+      ) : null}
+    </section></main>
   );
   if (resolved.state === "onboarding") return (
     <main className="academic-auth-screen"><section className="academic-auth-card academic-auth-card--wide"><p className="academic-auth-brand">ViJEEta</p><h1>Choose your workspace</h1><p>Choose how you will use Vijeeta. Admin access cannot be selected here.</p>

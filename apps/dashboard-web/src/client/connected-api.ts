@@ -149,7 +149,7 @@ export function createConnectedApi(options: ConnectedApiOptions) {
   const origin = safeOrigin(options.origin);
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  async function execute<T>(path: string, schema: Parser<T>, request: { method?: "GET" | "POST"; body?: unknown } = {}): Promise<T> {
+  async function execute<T>(path: string, schema: Parser<T>, request: { method?: "GET" | "POST"; body?: unknown; headers?: Record<string, string> } = {}): Promise<T> {
     const method = request.method ?? "GET";
     const safeRead = method === "GET";
     let forced = false;
@@ -164,6 +164,7 @@ export function createConnectedApi(options: ConnectedApiOptions) {
       try {
         const headers: Record<string, string> = { accept: "application/json", authorization: `Bearer ${token}` };
         if (request.body !== undefined) headers["content-type"] = "application/json";
+        Object.assign(headers, request.headers ?? {});
         const response = await transport(path, {
           method,
           headers,
@@ -216,17 +217,17 @@ export function createConnectedApi(options: ConnectedApiOptions) {
     listClasses: (page: Pagination = {}) => execute(query("/api/classes", page), ClassroomListResponseSchema),
     createClassroom: (body: CreateClassroomRequest) => execute("/api/classes", ClassroomResponseSchema, { method: "POST", body }),
     getClassroom: (id: string) => execute(`/api/classes/${segment(id)}`, ClassroomResponseSchema),
-    archiveClassroom: (id: string) => execute(`/api/classes/${segment(id)}/archive`, ClassroomResponseSchema, { method: "POST" }),
+    archiveClassroom: (id: string, body: AdminReasonRequest) => execute(`/api/classes/${segment(id)}/archive`, ClassroomResponseSchema, { method: "POST", body }),
     getClassroomRoster: (id: string, page: RosterPagination = {}) => execute(query(`/api/classes/${segment(id)}/members`, page), ClassroomRosterResponseSchema),
     inviteClassroomMember: (id: string, body: InviteClassroomMemberRequest) => execute(`/api/classes/${segment(id)}/members`, ClassroomInviteResponseSchema, { method: "POST", body }),
-    revokeClassroomInvitation: (classId: string, inviteId: string) => execute(`/api/classes/${segment(classId)}/invitations/${segment(inviteId)}/revoke`, ClassroomInviteResponseSchema, { method: "POST" }),
-    redeliverClassroomInvitation: (classId: string, inviteId: string) => execute(`/api/classes/${segment(classId)}/invitations/${segment(inviteId)}/redeliver`, ClassroomInviteResponseSchema, { method: "POST" }),
+    revokeClassroomInvitation: (classId: string, inviteId: string, body: AdminReasonRequest) => execute(`/api/classes/${segment(classId)}/invitations/${segment(inviteId)}/revoke`, ClassroomInviteResponseSchema, { method: "POST", body }),
+    redeliverClassroomInvitation: (classId: string, inviteId: string, body: AdminReasonRequest) => execute(`/api/classes/${segment(classId)}/invitations/${segment(inviteId)}/redeliver`, ClassroomInviteResponseSchema, { method: "POST", body }),
 
     inspectInvitation: (token: string) => execute("/api/invitations/inspect", InspectInvitationResponseSchema, { method: "POST", body: { token } }),
     acceptInvitation: (token: string) => execute("/api/invitations/accept", AcceptInvitationResponseSchema, { method: "POST", body: { token } }),
 
     listAssignments: (classId: string, page: Pagination = {}) => execute(query(`/api/classes/${segment(classId)}/assignments`, page), ClassroomAssignmentListResponseSchema),
-    createAssignment: (classId: string, body: CreateClassroomAssignmentRequest) => execute(`/api/classes/${segment(classId)}/assignments`, ClassroomAssignmentResponseSchema, { method: "POST", body }),
+    createAssignment: (classId: string, body: CreateClassroomAssignmentRequest, idempotencyKey: string) => execute(`/api/classes/${segment(classId)}/assignments`, ClassroomAssignmentResponseSchema, { method: "POST", body, headers: { "idempotency-key": idempotencyKey } }),
     launchAssignment: (id: string) => execute(`/api/assignments/${segment(id)}/launch`, AssignmentLaunchResponseSchema),
     getAssignmentInsights: (id: string) => execute(`/api/assignments/${segment(id)}/insights`, AssignmentInsightsResponseSchema),
     getStudentAssignmentInsights: (id: string, uid: string) => execute(`/api/assignments/${segment(id)}/students/${segment(uid)}/insights`, AssignmentInsightsResponseSchema),

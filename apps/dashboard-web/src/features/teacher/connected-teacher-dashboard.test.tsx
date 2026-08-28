@@ -131,10 +131,10 @@ describe("connected teacher dashboard", () => {
     fireEvent(window, new HashChangeEvent("hashchange"));
 
     fireEvent.click(await screen.findByRole("button", { name: "Redeliver" }));
-    await waitFor(() => expect(dependencies.redeliverClassroomInvitation).toHaveBeenCalledWith("class-1", "invite-1"));
+    await waitFor(() => expect(dependencies.redeliverClassroomInvitation).toHaveBeenCalledWith("class-1", "invite-1", { reason: expect.any(String) }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Revoke" }));
-    await waitFor(() => expect(dependencies.revokeClassroomInvitation).toHaveBeenCalledWith("class-1", "invite-1"));
+    await waitFor(() => expect(dependencies.revokeClassroomInvitation).toHaveBeenCalledWith("class-1", "invite-1", { reason: expect.any(String) }));
   });
 
   it("schedules an assignment against the selected class", async () => {
@@ -148,8 +148,9 @@ describe("connected teacher dashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Assign to class" }));
 
     await waitFor(() => expect(dependencies.createAssignment).toHaveBeenCalledTimes(1));
-    const [classId, body] = vi.mocked(dependencies.createAssignment).mock.calls[0]!;
+    const [classId, body, idempotencyKey] = vi.mocked(dependencies.createAssignment).mock.calls[0]!;
     expect(classId).toBe("class-1");
+    expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
     expect(body.jobId).toBe("JOB-9");
     expect(body.solutions).toBe("on_submit");
   });

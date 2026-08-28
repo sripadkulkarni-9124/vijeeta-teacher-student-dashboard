@@ -270,14 +270,14 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
 
   const revoke = (inviteId: string) => run(`revoke-${inviteId}`, async () => {
     if (selectedClassId === null) throw new Error("no class selected");
-    await api.revokeClassroomInvitation(selectedClassId, inviteId);
+    await api.revokeClassroomInvitation(selectedClassId, inviteId, { reason: "Revoked by the class teacher" });
     await loadClassDetail(selectedClassId);
     return "Invitation revoked";
   });
 
   const redeliver = (inviteId: string) => run(`redeliver-${inviteId}`, async () => {
     if (selectedClassId === null) throw new Error("no class selected");
-    await api.redeliverClassroomInvitation(selectedClassId, inviteId);
+    await api.redeliverClassroomInvitation(selectedClassId, inviteId, { reason: "Redelivery requested by the class teacher" });
     await loadClassDetail(selectedClassId);
     return "Invitation redelivery requested";
   });
@@ -290,7 +290,7 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
       openAt,
       closeAt: null,
       solutions: "on_submit",
-    });
+    }, crypto.randomUUID());
     setAssignments((current) => [created.assignment, ...current]);
     setJobId("");
     return "Assignment scheduled";
@@ -298,7 +298,7 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
 
   const archive = () => run("archive", async () => {
     if (selectedClassId === null) throw new Error("no class selected");
-    await api.archiveClassroom(selectedClassId);
+    await api.archiveClassroom(selectedClassId, { reason: "Archived by the class teacher" });
     await loadClasses();
     return "Class archived";
   });

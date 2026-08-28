@@ -85,6 +85,8 @@ describe("ProductionDashboard", () => {
       getProfile: vi.fn(async () => serverProfile()),
       onboard: vi.fn(),
       setActiveRole: vi.fn(),
+      inspectInvitation: vi.fn(),
+      acceptInvitation: vi.fn(),
     };
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="teacher" />);
 
@@ -103,7 +105,7 @@ describe("ProductionDashboard", () => {
   ])("never renders protected content while redirecting a wrong %s route", async (requestedRoute, persisted, canonicalPath) => {
     window.history.replaceState({}, "", `/${requestedRoute}`);
     const connected: ConnectedNavigationApi = {
-      auth: api().auth, getProfile: vi.fn(async () => persisted), onboard: vi.fn(), setActiveRole: vi.fn(),
+      auth: api().auth, getProfile: vi.fn(async () => persisted), onboard: vi.fn(), setActiveRole: vi.fn(), inspectInvitation: vi.fn(), acceptInvitation: vi.fn(),
     };
     render(<ConnectedDashboardNavigation api={connected} requestedRoute={requestedRoute} />);
 
@@ -118,6 +120,8 @@ describe("ProductionDashboard", () => {
       getProfile: vi.fn(async () => { throw Object.assign(new Error("onboarding"), { code: "profile_onboarding_required", status: 404 }); }),
       onboard: vi.fn(async () => serverProfile({ roles: { teacher: "pending" }, activeRole: null })),
       setActiveRole: vi.fn(),
+      inspectInvitation: vi.fn(),
+      acceptInvitation: vi.fn(),
     };
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="onboarding" />);
 
@@ -137,6 +141,8 @@ describe("ProductionDashboard", () => {
       getProfile: vi.fn(async () => teacher),
       onboard: vi.fn(),
       setActiveRole: vi.fn(async () => student),
+      inspectInvitation: vi.fn(),
+      acceptInvitation: vi.fn(),
     };
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="teacher" />);
 
@@ -156,7 +162,7 @@ describe("ProductionDashboard", () => {
     const waiting = serverProfile({ roles: { [activeRole]: "active", [suspendedRole]: "suspended" }, activeRole: null });
     const activated = serverProfile({ roles: waiting.roles, activeRole });
     const connected: ConnectedNavigationApi = {
-      auth: api().auth, getProfile: vi.fn(async () => waiting), onboard: vi.fn(), setActiveRole: vi.fn(async () => activated),
+      auth: api().auth, getProfile: vi.fn(async () => waiting), onboard: vi.fn(), setActiveRole: vi.fn(async () => activated), inspectInvitation: vi.fn(), acceptInvitation: vi.fn(),
     };
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="suspended" />);
 
@@ -171,6 +177,53 @@ describe("ProductionDashboard", () => {
     expect(await screen.findByRole("heading", { name: new RegExp(`${activeRole} workspace`, "i") })).toBeVisible();
   });
 
+  it("inspects a captured invitation and joins the class", async () => {
+    window.history.replaceState({}, "", "/invite#token=invite-1.secret");
+    const student = serverProfile({ roles: { student: "active" }, activeRole: "student" });
+    const connected: ConnectedNavigationApi = {
+      auth: api().auth,
+      getProfile: vi.fn(async () => student),
+      onboard: vi.fn(),
+      setActiveRole: vi.fn(),
+      inspectInvitation: vi.fn(async () => ({
+        inviteId: "invite-1", classroomId: "class-1", classroomName: "Grade 12 Physics",
+        teacherDisplayName: "Dr. Sharma", targetEmailMatches: true, studentOnboardingRequired: false,
+        expiresAt: "2026-09-04T00:00:00.000Z", status: "pending" as const,
+      })),
+      acceptInvitation: vi.fn(async () => ({})),
+    };
+    render(<ConnectedDashboardNavigation api={connected} requestedRoute="invite" />);
+
+    await waitFor(() => expect(connected.inspectInvitation).toHaveBeenCalledWith("invite-1.secret"));
+    expect(await screen.findByText(/Dr\. Sharma invited you to join Grade 12 Physics/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: /join class/i }));
+    await waitFor(() => expect(connected.acceptInvitation).toHaveBeenCalledWith("invite-1.secret"));
+    await waitFor(() => expect(window.location.pathname).toBe("/student"));
+  });
+
+  it("refuses to offer a join when the invitation was sent to another address", async () => {
+    window.history.replaceState({}, "", "/invite#token=invite-1.secret");
+    const student = serverProfile({ roles: { student: "active" }, activeRole: "student" });
+    const connected: ConnectedNavigationApi = {
+      auth: api().auth,
+      getProfile: vi.fn(async () => student),
+      onboard: vi.fn(),
+      setActiveRole: vi.fn(),
+      inspectInvitation: vi.fn(async () => ({
+        inviteId: "invite-1", classroomId: "class-1", classroomName: "Grade 12 Physics",
+        teacherDisplayName: "Dr. Sharma", targetEmailMatches: false, studentOnboardingRequired: false,
+        expiresAt: "2026-09-04T00:00:00.000Z", status: "pending" as const,
+      })),
+      acceptInvitation: vi.fn(),
+    };
+    render(<ConnectedDashboardNavigation api={connected} requestedRoute="invite" />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/different email address/i);
+    expect(screen.queryByRole("button", { name: /join class/i })).not.toBeInTheDocument();
+    expect(connected.acceptInvitation).not.toHaveBeenCalled();
+  });
+
   it("clears protected content immediately when Firebase reports a different signed-in profile", async () => {
     let listener: ((user: typeof profile.user | null) => void) | undefined;
     let resolveSecond!: (value: DashboardProfileV2) => void;
@@ -179,7 +232,7 @@ describe("ProductionDashboard", () => {
     const connected: ConnectedNavigationApi = {
       auth: { ...api().auth, subscribe: (next) => { listener = next; return () => undefined; } },
       getProfile: vi.fn().mockResolvedValueOnce(teacher).mockReturnValueOnce(second),
-      onboard: vi.fn(), setActiveRole: vi.fn(),
+      onboard: vi.fn(), setActiveRole: vi.fn(), inspectInvitation: vi.fn(), acceptInvitation: vi.fn(),
     };
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="teacher" />);
     expect(await screen.findByRole("heading", { name: /teacher workspace/i })).toBeVisible();
