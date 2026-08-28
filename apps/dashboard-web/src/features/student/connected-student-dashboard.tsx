@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import type {
   AssignmentInsightsResponse,
@@ -90,14 +90,20 @@ export function ConnectedStudentDashboard({ api = defaultApi(), onAuthorizationL
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [denied, setDenied] = useState(false);
 
+  // Held in a ref so `report` keeps a stable identity. Callers pass this as an
+  // inline arrow, and a changing identity would cascade through the loaders
+  // into the effects below, re-running them on every render.
+  const authorizationLost = useRef(onAuthorizationLost);
+  useEffect(() => { authorizationLost.current = onAuthorizationLost; }, [onAuthorizationLost]);
+
   const report = useCallback((error: unknown) => {
     const copy = studentFailureCopy(error);
     setFeedback({ tone: "error", message: copy.message });
     if (copy.denied) {
       setDenied(true);
-      onAuthorizationLost?.();
+      authorizationLost.current?.();
     }
-  }, [onAuthorizationLost]);
+  }, []);
 
   const load = useCallback(async () => {
     setLoading(true);

@@ -95,6 +95,21 @@ describe("connected teacher dashboard", () => {
     expect(dependencies.listAssignments).toHaveBeenCalledWith("class-1", { limit: 50 });
   });
 
+  it("loads the roster once even though the caller passes a new callback each render", async () => {
+    const dependencies = api();
+    // Callers pass this inline. An unstable identity used to cascade into the
+    // loaders and re-run their effects forever, wiping the roster each pass.
+    const { rerender } = render(<ConnectedTeacherDashboard api={dependencies} onAuthorizationLost={() => undefined} />);
+    await waitFor(() => expect(screen.getByRole("rowheader", { name: "Grade 12 Physics" })).toBeInTheDocument());
+
+    rerender(<ConnectedTeacherDashboard api={dependencies} onAuthorizationLost={() => undefined} />);
+    rerender(<ConnectedTeacherDashboard api={dependencies} onAuthorizationLost={() => undefined} />);
+
+    await waitFor(() => expect(screen.getByText("Pending invitations").parentElement).toHaveTextContent("1"));
+    expect(dependencies.listClasses).toHaveBeenCalledTimes(1);
+    expect(dependencies.getClassroomRoster).toHaveBeenCalledTimes(1);
+  });
+
   it("creates a class and selects it", async () => {
     const dependencies = api();
     render(<ConnectedTeacherDashboard api={dependencies} />);

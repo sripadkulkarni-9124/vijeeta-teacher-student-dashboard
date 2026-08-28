@@ -8,7 +8,9 @@ import {
   connectAuthEmulator,
   createUserWithEmailAndPassword,
   onAuthStateChanged,
+  getRedirectResult,
   sendEmailVerification,
+  signInWithRedirect,
   setPersistence,
   signInWithEmailAndPassword,
   signInWithPopup,
@@ -36,6 +38,8 @@ export interface FirebaseRuntime {
   signInWithEmailAndPassword(auth: FirebaseAuthLike, email: string, password: string): Promise<{ user: FirebaseUserLike }>;
   createUserWithEmailAndPassword(auth: FirebaseAuthLike, email: string, password: string): Promise<{ user: FirebaseUserLike }>;
   sendEmailVerification(user: FirebaseUserLike): Promise<void>;
+  signInWithRedirect(auth: FirebaseAuthLike, provider: unknown): Promise<void>;
+  getRedirectResult(auth: FirebaseAuthLike): Promise<{ user: FirebaseUserLike } | null>;
   signOut(auth: FirebaseAuthLike): Promise<void>;
   onAuthStateChanged(auth: FirebaseAuthLike, listener: (user: FirebaseUserLike | null) => void): () => void;
 }
@@ -95,6 +99,8 @@ async function loadRuntime(): Promise<FirebaseRuntime> {
     signInWithEmailAndPassword: signInWithEmailAndPassword as unknown as FirebaseRuntime["signInWithEmailAndPassword"],
     createUserWithEmailAndPassword: createUserWithEmailAndPassword as unknown as FirebaseRuntime["createUserWithEmailAndPassword"],
     sendEmailVerification: sendEmailVerification as unknown as FirebaseRuntime["sendEmailVerification"],
+    signInWithRedirect: signInWithRedirect as unknown as FirebaseRuntime["signInWithRedirect"],
+    getRedirectResult: getRedirectResult as unknown as FirebaseRuntime["getRedirectResult"],
     signOut: signOut as unknown as FirebaseRuntime["signOut"],
     onAuthStateChanged: onAuthStateChanged as unknown as FirebaseRuntime["onAuthStateChanged"],
   };
@@ -142,12 +148,34 @@ export function createFirebaseAuth(options: { loadRuntime?: () => Promise<Fireba
       currentUser = userFromFirebase(result.user);
       return currentUser!;
     },
+    async resendEmailVerification() {
+      const loaded = await requireRuntime();
+      const user = loaded.auth.currentUser;
+      if (!user) throw new Error("Sign in to continue");
+      await loaded.sendEmailVerification(user);
+    },
     async isEmailVerified() {
       const loaded = await requireRuntime();
       const user = loaded.auth.currentUser;
       if (!user) return false;
       await user.reload?.();
       return user.emailVerified === true;
+    },
+    /**
+     * Loads Firebase ahead of the click. Initialising inside the click handler
+     * spends the browser's transient user activation, and window.open is then
+     * blocked silently, which reads as "nothing happened".
+     */
+    async prepare() {
+      await requireRuntime();
+    },
+    /** Completes a redirect sign-in after the browser navigates back. */
+    async completeRedirectSignIn() {
+      const loaded = await requireRuntime();
+      const result = await loaded.getRedirectResult(loaded.auth);
+      if (result === null) return null;
+      currentUser = userFromFirebase(result.user);
+      return currentUser;
     },
     async signInWithGoogle() {
       const loaded = await requireRuntime();
@@ -157,8 +185,15 @@ export function createFirebaseAuth(options: { loadRuntime?: () => Promise<Fireba
         currentUser = userFromFirebase(result.user);
         return currentUser!;
       } catch (error) {
-        if ((error as { code?: string }).code === "auth/popup-blocked") {
-          throw Object.assign(new Error("The sign-in popup was blocked. Allow popups for this site and try again."), { code: "auth/popup-blocked" });
+        const code = (error as { code?: string }).code;
+        // A blocked or dismissed popup is recoverable: the redirect flow needs
+        // no popup at all. It navigates away, so this never returns a user.
+        if (code === "auth/popup-blocked" || code === "auth/cancelled-popup-request" || code === "auth/operation-not-supported-in-this-environment") {
+          await loaded.signInWithRedirect(loaded.auth, provider);
+          throw Object.assign(new Error("Continuing sign-in in this tab…"), { code: "auth/redirecting" });
+        }
+        if (code === "auth/popup-closed-by-user") {
+          throw Object.assign(new Error("Sign-in was cancelled before it finished."), { code });
         }
         throw error;
       }

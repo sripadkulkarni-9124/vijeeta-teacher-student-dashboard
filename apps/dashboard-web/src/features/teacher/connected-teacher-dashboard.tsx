@@ -188,14 +188,20 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
     [classes, selectedClassId],
   );
 
+  // Held in a ref so `report` keeps a stable identity. Callers pass this as an
+  // inline arrow, and a changing identity would cascade through the loaders
+  // into the effects below, re-running them on every render.
+  const authorizationLost = useRef(onAuthorizationLost);
+  useEffect(() => { authorizationLost.current = onAuthorizationLost; }, [onAuthorizationLost]);
+
   const report = useCallback((error: unknown) => {
     const copy = teacherFailureCopy(error);
     setFeedback({ tone: "error", message: copy.message });
     if (copy.denied) {
       setDenied(true);
-      onAuthorizationLost?.();
+      authorizationLost.current?.();
     }
-  }, [onAuthorizationLost]);
+  }, []);
 
   const loadClasses = useCallback(async () => {
     setLoading(true);

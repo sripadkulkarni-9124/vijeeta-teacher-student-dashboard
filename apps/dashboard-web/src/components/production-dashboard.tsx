@@ -258,6 +258,15 @@ function connectedMessage(error: unknown): string {
   }
   const code = error && typeof error === "object" ? (error as { code?: string }).code : undefined;
   if (code === "auth/unauthorized-domain") return "This sign-in domain is not in the Firebase authorized domain list.";
+  if (code === "auth/popup-blocked") return "Your browser blocked the sign-in window. Allow pop-ups for this site, then try again.";
+  if (code === "auth/popup-closed-by-user" || code === "auth/cancelled-popup-request") return "Sign-in was cancelled before it finished.";
+  if (code === "auth/network-request-failed") return "The sign-in service could not be reached. Check your connection and try again.";
+  if (code === "auth/operation-not-allowed") return "This sign-in method is not enabled for this Firebase project.";
+  if (code === "auth/invalid-api-key" || code === "auth/api-key-not-valid") return "The Firebase API key for this build is not valid.";
+  // Any other Firebase code is reported verbatim. These identify a
+  // configuration fault and contain no user data, and hiding them behind a
+  // generic message makes sign-in failures impossible to diagnose.
+  if (typeof code === "string" && code.startsWith("auth/")) return `Sign-in failed (${code}).`;
   return "The dashboard could not verify your access. Try again.";
 }
 
@@ -278,15 +287,17 @@ export function ConnectedDashboardNavigation({
   const [currentRoute, setCurrentRoute] = useState<DashboardRequestedRoute>(requestedRoute);
   const [invitationLinkState, setInvitationLinkState] = useState<"unchecked" | "captured" | "missing">("unchecked");
   const [authMode, setAuthMode] = useState<"sign_in" | "sign_up">("sign_in");
-  const [credentials, setCredentials] = useState({ email: "", password: "" });
   const [signUpRole, setSignUpRole] = useState<"student" | "teacher">("student");
   const [awaitingVerification, setAwaitingVerification] = useState<{ email: string; role: "student" | "teacher" } | null>(null);
+  const pendingSignUpRole = useRef<"student" | "teacher" | null>(null);
+  const onboardRef = useRef<((role: "student" | "teacher") => Promise<void>) | null>(null);
   const [invitation, setInvitation] = useState<InspectInvitationResponse | null>(null);
   const [invitationError, setInvitationError] = useState<string | null>(null);
   const authorizationVersion = useRef(0);
   const invitationToken = useRef<string | null | undefined>(undefined);
 
   useEffect(() => setCurrentRoute(requestedRoute), [requestedRoute]);
+
 
   useEffect(() => {
     if (requestedRoute !== "invite" || invitationToken.current !== undefined) return;
@@ -311,6 +322,11 @@ export function ConnectedDashboardNavigation({
       if (code === "profile_onboarding_required") {
         setProfile(null);
         setStatus("ready");
+        const chosen = pendingSignUpRole.current;
+        if (chosen !== null) {
+          pendingSignUpRole.current = null;
+          void onboardRef.current?.(chosen);
+        }
       } else if (code === "unauthenticated" || (caught instanceof ConnectedApiError && caught.status === 401)) {
         setUser(null);
         setProfile(null);
@@ -322,6 +338,16 @@ export function ConnectedDashboardNavigation({
       }
     }
   }, [api]);
+
+  useEffect(() => {
+    // Warm Firebase so the popup opens inside the click's user activation, and
+    // pick up a redirect sign-in if the popup route was unavailable.
+    void api.auth.prepare?.();
+    void (async () => {
+      const redirected = await api.auth.completeRedirectSignIn?.().catch(() => null);
+      if (redirected) await loadProfile(redirected);
+    })();
+  }, [api, loadProfile]);
 
   useEffect(() => {
     let active = true;
@@ -361,7 +387,12 @@ export function ConnectedDashboardNavigation({
   useEffect(() => {
     if (status !== "ready") return;
     const guard = resolveProtectedRoute(currentRoute, user !== null, profile);
-    if (guard.redirect !== null) replacePath(guard.redirect);
+    if (guard.redirect === null) return;
+    // replacePath only rewrites the URL, so the requested route has to move with
+    // it. Without this the view stays on the redirect placeholder forever after
+    // a client-side sign-in, because no navigation ever re-mounts the page.
+    replacePath(guard.redirect);
+    setCurrentRoute(requestedRouteForState(resolveDashboardRoute({ authenticated: user !== null, profile }).state));
   }, [currentRoute, profile, status, user]);
 
   /** Re-checks verification, then applies the role chosen at sign-up. */
@@ -389,39 +420,18 @@ export function ConnectedDashboardNavigation({
   const signIn = async () => {
     setBusy(true);
     setError(null);
-    try { await loadProfile(await api.auth.signInWithGoogle()); }
-    catch (caught) { setError(connectedMessage(caught)); setStatus("signed_out"); }
-    finally { setBusy(false); }
-  };
-
-  /**
-   * Sign-up captures the role up front and onboards with it immediately, so a
-   * new account lands in its workspace rather than on a second screen. The role
-   * is still only a request: the server decides, and Teacher stays pending
-   * until an Admin approves it.
-   */
-  const submitCredentials = async () => {
-    setBusy(true);
-    setError(null);
     try {
-      if (authMode === "sign_in") {
-        await loadProfile(await api.auth.signInWithEmailPassword(credentials.email, credentials.password));
-        return;
-      }
-      const created = api.auth.createAccountWithEmailPassword;
-      if (created === undefined) throw new Error("Account creation is not enabled for this application");
-      await created(credentials.email, credentials.password);
-      // The server refuses to onboard an unverified principal, so hold the
-      // chosen role until the address is confirmed rather than failing here.
-      setAwaitingVerification({ email: credentials.email, role: signUpRole });
-      setCredentials({ email: "", password: "" });
+      const nextUser = await api.auth.signInWithGoogle();
+      if (authMode === "sign_up") pendingSignUpRole.current = signUpRole;
+      await loadProfile(nextUser);
     } catch (caught) {
+      // The redirect fallback navigates away, so there is nothing to report.
+      if ((caught as { code?: string }).code === "auth/redirecting") return;
       setError(connectedMessage(caught));
       setStatus("signed_out");
-    } finally {
-      setBusy(false);
-    }
+    } finally { setBusy(false); }
   };
+
   const acceptInvitation = async () => {
     const token = invitationToken.current;
     if (!token) return;
@@ -449,17 +459,29 @@ export function ConnectedDashboardNavigation({
     try { await api.auth.signOut(); } catch { setError("Sign-out could not be completed. Try again."); }
   };
   const onboard = async (role: "student" | "teacher") => {
-    setProfile(null);
-    setStatus("loading");
+    setBusy(true);
+    setError(null);
     try {
+      // Teacher is a privileged role and the server requires a verified email
+      // for it. Check first so the choice explains itself instead of returning
+      // a bare "not permitted".
+      if (role === "teacher" && await api.auth.isEmailVerified?.() === false) {
+        await api.auth.resendEmailVerification?.();
+        setAwaitingVerification({ email: user?.email ?? "your address", role });
+        return;
+      }
       const next = await api.onboard(role);
       setProfile(next);
-      setStatus("ready");
       const destination = resolveDashboardRoute({ authenticated: true, profile: next });
       setCurrentRoute(requestedRouteForState(destination.state));
       replacePath(destination.canonicalPath);
-    } catch (caught) { setError(connectedMessage(caught)); setStatus("error"); }
+    } catch (caught) {
+      setError(connectedMessage(caught));
+    } finally {
+      setBusy(false);
+    }
   };
+  onboardRef.current = onboard;
   const switchRole = async (role: ConnectedDashboardRole) => {
     if (profile?.roles[role] !== "active") return;
     setProfile(null);
@@ -490,37 +512,23 @@ export function ConnectedDashboardNavigation({
   if (user === null || status === "signed_out") return (
     <main className="academic-auth-screen"><section className="academic-auth-card academic-auth-card--wide"><p className="academic-auth-brand">ViJEEta</p>
       <h1>{authMode === "sign_in" ? "Sign in to Vijeeta" : "Create your Vijeeta account"}</h1>
-      <p>{authMode === "sign_in" ? "Teachers and students use the same secure sign-in." : "Choose how you will use Vijeeta. Admin access cannot be selected here."}</p>
+      <p>{authMode === "sign_in" ? "Teachers and students use the same secure Google sign-in." : "Choose how you will use Vijeeta, then continue with Google. Admin access cannot be selected here."}</p>
 
       <div className="academic-auth-tabs" role="tablist" aria-label="Sign in or sign up">
         <button aria-selected={authMode === "sign_in"} className="academic-auth-tab" onClick={() => { setAuthMode("sign_in"); setError(null); }} role="tab" type="button">Sign in</button>
         <button aria-selected={authMode === "sign_up"} className="academic-auth-tab" onClick={() => { setAuthMode("sign_up"); setError(null); }} role="tab" type="button">Sign up</button>
       </div>
 
-      <button className="academic-google-button" type="button" disabled={busy} onClick={() => void signIn()}><span aria-hidden="true">G</span>{busy ? "Signing in…" : "Continue with Google"}</button>
+      <button className="academic-google-button" type="button" disabled={busy} onClick={() => void signIn()}><span aria-hidden="true">G</span>{busy ? "Signing in…" : authMode === "sign_up" ? "Sign up with Google" : "Continue with Google"}</button>
 
-      <form className="academic-auth-form" onSubmit={(event) => { event.preventDefault(); void submitCredentials(); }}>
-        <label className="academic-field" htmlFor="auth-email">Email
-          <input autoComplete="email" id="auth-email" maxLength={320} onChange={(event) => setCredentials((current) => ({ ...current, email: event.target.value }))} required type="email" value={credentials.email} />
-        </label>
-        <label className="academic-field" htmlFor="auth-password">Password
-          <input autoComplete={authMode === "sign_in" ? "current-password" : "new-password"} id="auth-password" minLength={8} maxLength={128} onChange={(event) => setCredentials((current) => ({ ...current, password: event.target.value }))} required type="password" value={credentials.password} />
-        </label>
+      {authMode === "sign_up" ? (
+        <fieldset className="academic-role-options">
+          <legend>I am a</legend>
+          <label><input checked={signUpRole === "student"} name="signup-role" onChange={() => setSignUpRole("student")} type="radio" value="student" /><strong>Student</strong><small>Join classes and take assigned tests.</small></label>
+          <label><input checked={signUpRole === "teacher"} name="signup-role" onChange={() => setSignUpRole("teacher")} type="radio" value="teacher" /><strong>Teacher</strong><small>Request approval to manage classes.</small></label>
+        </fieldset>
+      ) : null}
 
-        {authMode === "sign_up" ? (
-          <fieldset className="academic-role-options">
-            <legend>I am a</legend>
-            <label><input checked={signUpRole === "student"} name="signup-role" onChange={() => setSignUpRole("student")} type="radio" value="student" /><strong>Student</strong><small>Join classes and take assigned tests.</small></label>
-            <label><input checked={signUpRole === "teacher"} name="signup-role" onChange={() => setSignUpRole("teacher")} type="radio" value="teacher" /><strong>Teacher</strong><small>Request approval to manage classes.</small></label>
-          </fieldset>
-        ) : null}
-
-        <button className="academic-button academic-button--primary" disabled={busy} type="submit">
-          {busy ? "Working…" : authMode === "sign_in" ? "Sign in" : "Create account"}
-        </button>
-      </form>
-
-      {authMode === "sign_up" ? <p className="academic-subtitle">An email-and-password account starts unverified. Most actions need a verified email, so Google sign-in is the quickest way in.</p> : null}
       {error ? <p role="alert">{error}</p> : null}
     </section></main>
   );

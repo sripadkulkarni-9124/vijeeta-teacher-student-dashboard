@@ -14,6 +14,9 @@ export interface ProductionAuthSession {
   signInWithEmailPassword(email: string, password: string): Promise<ProductionUser>;
   createAccountWithEmailPassword?(email: string, password: string): Promise<ProductionUser>;
   isEmailVerified?(): Promise<boolean>;
+  resendEmailVerification?(): Promise<void>;
+  prepare?(): Promise<void>;
+  completeRedirectSignIn?(): Promise<ProductionUser | null>;
   signInWithGoogle(): Promise<ProductionUser>;
   signOut(): Promise<void>;
   subscribe(listener: (user: ProductionUser | null) => void): () => void;
