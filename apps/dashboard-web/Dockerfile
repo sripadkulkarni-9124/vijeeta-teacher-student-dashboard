@@ -39,7 +39,8 @@ ENV NEXT_PUBLIC_FIREBASE_APP_ID=${NEXT_PUBLIC_FIREBASE_APP_ID}
 # intentionally supplied by the build environment and never written here.
 RUN test "${NEXT_PUBLIC_DASHBOARD_MODE}" = "v3-proxy" \
   && test -n "${NEXT_PUBLIC_FIREBASE_API_KEY}" \
-  && test "${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}" = "neetcompanion-50b1f.firebaseapp.com" \
+  && { test "${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}" = "neetcompanion-50b1f.firebaseapp.com" \
+    || test "${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}" = "vijeeta-dashboard-4q2t5b27aa-el.a.run.app"; } \
   && test "${NEXT_PUBLIC_FIREBASE_PROJECT_ID}" = "neetcompanion-50b1f" \
   && test "${NEXT_PUBLIC_FIREBASE_APP_ID}" = "1:840759107103:web:68dfff0b2e8c209babff2a"
 
