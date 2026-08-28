@@ -92,12 +92,6 @@ export const ADMIN_INVITATION_QUERY_INDEX = {
   ],
 } as const;
 
-/**
- * Automatic single-field indexes are collection-scoped, so a collection-group
- * equality needs an explicit override.
- */
-export const COLLECTION_GROUP_ID_LOOKUPS = ["assignments", "invites"] as const;
-
 export const STUDENT_ASSIGNMENT_QUERY_INDEX = {
   collectionGroup: "assignments",
   queryScope: "COLLECTION",

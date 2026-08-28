@@ -188,24 +188,29 @@ check that no reachable server response can produce.
 
 ## Firestore indexes
 
-Four composite queries had no declared index. Firestore answers
+Two composite queries had no declared index. Firestore answers
 `FAILED_PRECONDITION`, which maps to a generic 503 that reports itself as
 retryable but never resolves, so assignment creation and the Admin invitation
-feed would have been dead in production. The emulator does not enforce index
+feed were dead against real Firestore. The emulator does not enforce index
 requirements, so every local suite passed regardless.
 
-| Query | Index |
-| --- | --- |
-| assignment recipients | `members`, COLLECTION, `status ASC, studentUid ASC` |
-| Admin invitation feed | `invites`, COLLECTION_GROUP, `createdAt DESC, id DESC` |
-| assignment id lookup | `assignments.id`, COLLECTION_GROUP override |
-| invitation id lookup | `invites.id`, COLLECTION_GROUP override |
+| Query | Index | State |
+| --- | --- | --- |
+| assignment recipients | `members`, COLLECTION, `status ASC, studentUid ASC` | READY |
+| Admin invitation feed | `invites`, COLLECTION_GROUP, `createdAt DESC, id DESC` | READY |
+
+Both are created in `projects/neetcompanion-50b1f/databases/vijeeta-dashboard`
+and the previously failing invitation query was re-run against it successfully.
 
 Each query is built from its exported index constant, and the constants are
 asserted against `firestore.indexes.dashboard.json`, so the two cannot drift.
 
-**These indexes have not been deployed.** They must be created and finish
-building before the first production read.
+The `collectionGroup(...).where("id", "==", ...)` lookups used by
+`resolveAssignmentById` and `resolveInvitationById` need **no** declared index.
+An earlier revision of this document claimed they required collection-group
+field overrides; that was wrong, and both queries were verified to resolve
+without one. The overrides were removed, because a field override replaces
+automatic indexing for that field and would have narrowed it.
 
 ## Not covered — still open before deployment
 

@@ -10,7 +10,6 @@ import {
   FirestoreDashboardStore,
   ADMIN_INVITATION_QUERY_INDEX,
   ASSIGNMENT_RECIPIENT_QUERY_INDEX,
-  COLLECTION_GROUP_ID_LOOKUPS,
   STUDENT_ASSIGNMENT_QUERY_INDEX,
   type FirestoreCollectionReference,
   type FirestoreDashboardDocumentReference,
@@ -237,19 +236,6 @@ describe("named dashboard Firestore index contract", () => {
     expect(dashboardIndexes.indexes).toContainEqual(ADMIN_INVITATION_QUERY_INDEX);
   });
 
-  it("checks in a collection-group index for every id lookup, keeping the collection-scoped ones", () => {
-    COLLECTION_GROUP_ID_LOOKUPS.forEach((collectionGroup) => {
-      const override = dashboardIndexes.fieldOverrides.find(
-        (entry) => entry.collectionGroup === collectionGroup && entry.fieldPath === "id",
-      );
-      expect(override, `${collectionGroup}.id override`).toBeDefined();
-      expect(override!.indexes.some((index) => index.queryScope === "COLLECTION_GROUP")).toBe(true);
-      // A field override replaces automatic indexing, so the collection-scoped
-      // entries must be restated or ordinary lookups regress.
-      expect(override!.indexes.filter((index) => index.queryScope === "COLLECTION").map((index) => index.order).sort())
-        .toEqual(["ASCENDING", "DESCENDING"]);
-    });
-  });
 });
 
 const adminPrincipal = principal("admin-uid", "admin@example.com", true);
