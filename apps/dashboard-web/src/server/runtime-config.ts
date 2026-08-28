@@ -16,21 +16,29 @@ export interface V3RuntimeConfig {
 const APPROVED_PRODUCTION_V3_ORIGIN = "https://examprep-api-4q2t5b27aa-el.a.run.app";
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
 
+/**
+ * Parsed through the URL parser rather than by splitting on ":", because a bare
+ * split accepts "127.0.0.1:9099@attacker.example", where the loopback-looking
+ * part is userinfo and the real host is the attacker's.
+ */
 function isLoopbackHost(value: string): boolean {
-  const host = value.includes("://") ? safeHostname(value) : value.split(":")[0];
-  return host !== null && LOOPBACK_HOSTNAMES.has(host);
-}
-
-function safeHostname(value: string): string | null {
-  try { return new URL(value).hostname; } catch { return null; }
+  let url: URL;
+  try { url = new URL(value.includes("://") ? value : `http://${value}`); } catch { return false; }
+  if (url.username || url.password) return false;
+  if (url.pathname !== "/" || url.search || url.hash) return false;
+  return LOOPBACK_HOSTNAMES.has(url.hostname);
 }
 
 /**
  * The pre-cloud release gate runs the production runtime against loopback Auth
- * and Firestore emulators. It never relaxes a production rule: the approved V3
- * origin is still pinned, and the gate reaches V3 through an in-process fake
- * transport rather than the network. Enabling it requires the explicit opt-in,
- * the absence of any Cloud Run marker, and loopback emulator hosts.
+ * and Firestore emulators. The approved V3 origin and the named database stay
+ * pinned, and V3 is reached through an in-process fake rather than the network.
+ *
+ * It does change two things, and they are the reason it is this hard to enable:
+ * Firebase token signatures are not verified (the emulator verifier accepts
+ * unsigned tokens), and invitation email is captured rather than sent. Enabling
+ * it therefore requires the explicit opt-in, the absence of any Cloud Run
+ * marker, and loopback emulator hosts.
  */
 export function isReleaseGateMode(env: NodeJS.ProcessEnv | Record<string, string | undefined>): boolean {
   if (env.VIJEETA_RELEASE_GATE_MODE !== "loopback") return false;
@@ -57,6 +65,12 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, string
   try { baseUrl = new URL(baseValue); } catch { throw new Error("VIJEETA_V3_BASE_URL must be an absolute URL"); }
   if (baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) throw new Error("V3 base URL must not contain credentials or query state");
   const releaseGate = isReleaseGateMode(env);
+  if (mode === "production" && !releaseGate && (env.FIREBASE_AUTH_EMULATOR_HOST || env.FIRESTORE_EMULATOR_HOST)) {
+    // firebase-admin silently switches to the emulator verifier when these are
+    // set, which skips JWT signature verification entirely. A production
+    // runtime that can see them is an authentication bypass, so refuse to start.
+    throw new Error("A production runtime must not be configured with Firebase emulator hosts");
+  }
   if (mode === "production") {
     const approved = new URL(APPROVED_PRODUCTION_V3_ORIGIN);
     const hasUnexpectedPath = baseUrl.pathname !== "/";

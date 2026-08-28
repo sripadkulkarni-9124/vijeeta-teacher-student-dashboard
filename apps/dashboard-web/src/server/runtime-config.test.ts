@@ -114,3 +114,37 @@ describe("release gate mode", () => {
   });
 
 });
+
+describe("production refuses emulator configuration", () => {
+  const productionEnv = {
+    NODE_ENV: "production",
+    VIJEETA_RUNTIME_MODE: "production",
+    VIJEETA_V3_BASE_URL: "https://examprep-api-4q2t5b27aa-el.a.run.app/",
+    VIJEETA_FIRESTORE_DATABASE_ID: "vijeeta-dashboard",
+    VIJEETA_FIREBASE_PROJECT_ID: "neetcompanion-50b1f",
+    VIJEETA_ADMIN_BOOTSTRAP_JSON: JSON.stringify({ version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] }),
+  } as Record<string, string | undefined>;
+
+  it("starts normally without emulator hosts", () => {
+    expect(loadRuntimeConfig(productionEnv).releaseGate).toBe(false);
+  });
+
+  it("refuses a leaked Auth emulator host, which would disable signature verification", () => {
+    expect(() => loadRuntimeConfig({ ...productionEnv, FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099" }))
+      .toThrow(/must not be configured with Firebase emulator hosts/);
+  });
+
+  it("refuses a leaked Firestore emulator host", () => {
+    expect(() => loadRuntimeConfig({ ...productionEnv, FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080" }))
+      .toThrow(/must not be configured with Firebase emulator hosts/);
+  });
+
+  it("refuses a userinfo host that only looks like loopback", () => {
+    expect(() => loadRuntimeConfig({
+      ...productionEnv,
+      VIJEETA_RELEASE_GATE_MODE: "loopback",
+      FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099@attacker.example",
+      FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080",
+    })).toThrow(/loopback Auth and Firestore emulators/);
+  });
+});

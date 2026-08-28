@@ -81,12 +81,57 @@ egress at all. Six unit tests cover the guard, including refusal on Cloud Run, o
 a non-loopback emulator host, on a missing emulator host, and on a non-approved
 V3 origin while the gate is on.
 
+## Firestore security rules
+
+The reviewed rule set for the named database is
+[firestore.dashboard.rules](../firestore.dashboard.rules). It is deny-all at
+`match /{document=**}`, for every credential, authenticated or not.
+
+That is the whole rule set on purpose. The server reaches Firestore through the
+Firebase Admin SDK, which bypasses security rules entirely, so these rules
+constrain nothing the application does; authorization lives in the route
+handlers and the store. The browser ships no Firestore SDK and holds no
+Firestore credential. The rules are a backstop for the case where a client
+credential is nonetheless pointed at this database, and any future client access
+requires a separate security review.
+
+`apps/dashboard-web/src/test/firestore-rules.test.ts` loads that file into a
+Firestore emulator with `@firebase/rules-unit-testing` and asserts denial for
+three client contexts — unauthenticated, authenticated, and authenticated with
+an admin-looking token carrying `email_verified`, `role: "admin"`, and
+`admin: true`. It covers every document path the store writes (`profiles`,
+`profileEmailIndex`, `classrooms` and its `members`, `invites`,
+`deliveryAttempts`, `assignments`, `outboundOperations`, `inviteRateLimits`
+subcollections, `studentMemberships`, `studentAssignments`, `mutationKeys`,
+`auditEvents`) plus a path the store never uses, and asserts denial of reads,
+writes, deletes, collection queries, and collection-group queries. Documents are
+seeded through the rules-disabled context first, so a denial is a real refusal
+rather than a missing document, and a final assertion confirms the seeded
+documents were not modified.
+
+Run it against an emulator of your own, never a shared one:
+
+```bash
+FIRESTORE_EMULATOR_HOST=127.0.0.1:8280 pnpm --filter @vijeeta/dashboard-web exec vitest run src/test/firestore-rules.test.ts
+```
+
+Result: **4 passed / 4**. It skips when `FIRESTORE_EMULATOR_HOST` is unset, so
+ordinary `pnpm test` stays hermetic. The test was also negative-controlled:
+temporarily changing the rule to `allow read, write: if true` makes three of the
+four assertions fail with "Expected request to fail, but it succeeded", so the
+pass is not vacuous.
+
+What this does not prove: the rules have never been deployed, `firebase deploy`
+was not run, and no cloud resource was touched. The named database still does
+not exist, so nothing is currently enforcing them.
+
 ## Not covered — still open before deployment
 
 1. **Cloud Run runtime identity and IAM.** The dedicated service account and the
    per-database conditional binding are unapproved and uncreated.
-2. **Firestore security rules.** The emulator ran with deny-all rules; server
-   access bypasses rules via the Admin SDK. Rules are not yet reviewed.
+2. **Firestore security rules.** Written and tested locally; see
+   [Firestore security rules](#firestore-security-rules) below. Not deployed,
+   and the deployment step is unapproved.
 3. **Real SMTP delivery.** Capture-only here. The approved SMTP host and
    credentials must come from Secret Manager, not source.
 4. **V3 assignment, launch, and insight adapters.** The store-side flows are
