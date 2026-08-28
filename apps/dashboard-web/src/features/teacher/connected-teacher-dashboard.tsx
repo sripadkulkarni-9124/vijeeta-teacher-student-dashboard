@@ -165,10 +165,14 @@ function InviteDialog({ classroomName, busy, onCancel, onConfirm }: {
   );
 }
 
-export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationLost }: {
+export function ConnectedTeacherDashboard({ api: suppliedApi, onAuthorizationLost }: {
   api?: TeacherDashboardApi;
   onAuthorizationLost?: () => void;
 }) {
+  // A default parameter is evaluated on every render, so an unsupplied api was
+  // a new object each time. That changed the loaders' identity, re-fired their
+  // effects, and left the view loading forever.
+  const api = useMemo(() => suppliedApi ?? defaultApi(), [suppliedApi]);
   const [section, setSection] = useState<SectionHash>(currentSection);
   const [classes, setClasses] = useState<Classroom[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
@@ -179,6 +183,7 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [denied, setDenied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [newClassName, setNewClassName] = useState("");
   const [jobId, setJobId] = useState("");
@@ -194,9 +199,15 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
   const authorizationLost = useRef(onAuthorizationLost);
   useEffect(() => { authorizationLost.current = onAuthorizationLost; }, [onAuthorizationLost]);
 
-  const report = useCallback((error: unknown) => {
+  /**
+   * A failed background refresh is reported quietly next to the data it belongs
+   * to. The banner is for actions the viewer took, so a transient read does not
+   * fill the page with an alarming message the viewer cannot act on.
+   */
+  const report = useCallback((error: unknown, background = false) => {
     const copy = teacherFailureCopy(error);
-    setFeedback({ tone: "error", message: copy.message });
+    if (background) setLoadError(copy.message);
+    else setFeedback({ tone: "error", message: copy.message });
     if (copy.denied) {
       setDenied(true);
       authorizationLost.current?.();
@@ -210,8 +221,9 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
       setClasses(page.classrooms);
       setSelectedClassId((current) => current ?? page.classrooms[0]?.id ?? null);
       setDenied(false);
+      setLoadError(null);
     } catch (error) {
-      report(error);
+      report(error, true);
     } finally {
       setLoading(false);
     }
@@ -225,8 +237,9 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
       ]);
       setRoster({ members: rosterPage.members, invitations: rosterPage.invitations });
       setAssignments(assignmentPage.assignments);
+      setLoadError(null);
     } catch (error) {
-      report(error);
+      report(error, true);
     }
   }, [api, report]);
 
@@ -377,6 +390,12 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
           </button>
         </form>
         {loading ? <p className="academic-subtitle" role="status">Loading classes…</p> : null}
+        {!loading && loadError !== null ? (
+          <p className="academic-subtitle">
+            {loadError}{" "}
+            <button className="academic-button academic-button--quiet" onClick={() => void loadClasses()} type="button">Retry</button>
+          </p>
+        ) : null}
         {!loading && classes.length === 0 ? <p>No classes yet. Create one to invite students.</p> : null}
         {classes.length > 0 ? (
           <div className="academic-table-wrap"><table>

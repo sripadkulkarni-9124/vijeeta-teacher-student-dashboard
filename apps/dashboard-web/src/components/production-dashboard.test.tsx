@@ -370,9 +370,11 @@ describe("ProductionDashboard", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent(/checking your dashboard access/i));
     expect(screen.queryByRole("heading", { name: /teacher workspace/i })).not.toBeInTheDocument();
     resolveSecond(serverProfile({ firebaseUid: "uid-2", verifiedEmail: "student@example.test" }));
-    expect(await screen.findByText(/redirecting to your authorized workspace/i)).toBeVisible();
-    expect(screen.queryByRole("heading", { name: /student workspace/i })).not.toBeInTheDocument();
     await waitFor(() => expect(window.location.pathname).toBe("/student"));
+    // The second identity lands in its own workspace, and the first identity's
+    // workspace is never rendered again on the way there.
+    expect(await screen.findByRole("heading", { name: /student workspace/i })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: /teacher workspace/i })).not.toBeInTheDocument();
   });
 
   it("offers first-login role onboarding and never persists the choice in browser storage", async () => {

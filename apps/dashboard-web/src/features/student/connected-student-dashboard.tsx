@@ -76,11 +76,14 @@ export function isSafeRunnerPath(runnerPath: string): boolean {
   return runnerPath.startsWith("/") && !runnerPath.startsWith("//") && runnerPath.length <= 512;
 }
 
-export function ConnectedStudentDashboard({ api = defaultApi(), onAuthorizationLost, onLaunch }: {
+export function ConnectedStudentDashboard({ api: suppliedApi, onAuthorizationLost, onLaunch }: {
   api?: StudentDashboardApi;
   onAuthorizationLost?: () => void;
   onLaunch?: (runnerPath: string) => void;
 }) {
+  // See the teacher dashboard: a default parameter re-creates the api on every
+  // render and the loaders never settle.
+  const api = useMemo(() => suppliedApi ?? defaultApi(), [suppliedApi]);
   const [section, setSection] = useState<SectionHash>(currentSection);
   const [classes, setClasses] = useState<Classroom[]>([]);
   const [assignments, setAssignments] = useState<ClassroomAssignmentProjection[]>([]);
@@ -89,6 +92,7 @@ export function ConnectedStudentDashboard({ api = defaultApi(), onAuthorizationL
   const [busy, setBusy] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const [denied, setDenied] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   // Held in a ref so `report` keeps a stable identity. Callers pass this as an
   // inline arrow, and a changing identity would cascade through the loaders
@@ -96,9 +100,15 @@ export function ConnectedStudentDashboard({ api = defaultApi(), onAuthorizationL
   const authorizationLost = useRef(onAuthorizationLost);
   useEffect(() => { authorizationLost.current = onAuthorizationLost; }, [onAuthorizationLost]);
 
-  const report = useCallback((error: unknown) => {
+  /**
+   * A failed background refresh is reported quietly next to the data it belongs
+   * to. The banner is for actions the viewer took, so a transient read does not
+   * fill the page with an alarming message the viewer cannot act on.
+   */
+  const report = useCallback((error: unknown, background = false) => {
     const copy = studentFailureCopy(error);
-    setFeedback({ tone: "error", message: copy.message });
+    if (background) setLoadError(copy.message);
+    else setFeedback({ tone: "error", message: copy.message });
     if (copy.denied) {
       setDenied(true);
       authorizationLost.current?.();
@@ -115,8 +125,9 @@ export function ConnectedStudentDashboard({ api = defaultApi(), onAuthorizationL
       );
       setAssignments(pages.flatMap((entry) => entry.assignments));
       setDenied(false);
+      setLoadError(null);
     } catch (error) {
-      report(error);
+      report(error, true);
     } finally {
       setLoading(false);
     }
@@ -206,6 +217,12 @@ export function ConnectedStudentDashboard({ api = defaultApi(), onAuthorizationL
           <h2 id="student-tests-title">Assigned tests</h2>
         </header>
         {loading ? <p role="status">Loading your classes…</p> : null}
+        {!loading && loadError !== null ? (
+          <p className="academic-subtitle">
+            {loadError}{" "}
+            <button className="academic-button academic-button--quiet" onClick={() => void load()} type="button">Retry</button>
+          </p>
+        ) : null}
         {!loading && classes.length === 0 ? <p>You are not in a class yet. Accept an invitation from your teacher to join one.</p> : null}
         {!loading && classes.length > 0 && assignments.length === 0 ? <p>No tests have been assigned to your classes yet.</p> : null}
         {assignments.length > 0 ? (
