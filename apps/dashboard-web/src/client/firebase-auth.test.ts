@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createFirebaseAuth, type FirebaseRuntime } from "./firebase-auth";
+import { authEmulatorUrl, createFirebaseAuth, type FirebaseRuntime } from "./firebase-auth";
 
 function runtime() {
   const firebaseUser = {
@@ -52,5 +52,18 @@ describe("Firebase production auth", () => {
     stop();
     expect(fake.unsubscribe).toHaveBeenCalledTimes(1);
     expect(fake.getListener()).toBeTypeOf("function");
+  });
+});
+
+describe("auth emulator wiring", () => {
+  it("accepts only a loopback emulator host", () => {
+    expect(authEmulatorUrl("127.0.0.1:9099")).toBe("http://127.0.0.1:9099");
+    expect(authEmulatorUrl("localhost:9099")).toBe("http://localhost:9099");
+  });
+
+  it("ignores a remote host, an empty value, and an unset variable", () => {
+    expect(authEmulatorUrl("auth.example.com:9099")).toBeNull();
+    expect(authEmulatorUrl("")).toBeNull();
+    expect(authEmulatorUrl(undefined)).toBeNull();
   });
 });

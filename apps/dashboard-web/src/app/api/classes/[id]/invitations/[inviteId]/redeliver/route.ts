@@ -2,7 +2,7 @@ import { AdminReasonRequestSchema, ClassroomInviteResponseSchema, type Classroom
 
 import type { MutationContext } from "@/server/dashboard-store";
 import { authenticateRequest, jsonResponse, parseJsonBody, parseRouteId, requireNoQuery, requireRole, serveHttp } from "@/server/http";
-import { productionClassroomDependencies, projectInvitation, type ClassroomRouteDependencies } from "../../../../route-support";
+import { productionInvitationDeliveryDependencies, projectInvitation, type ClassroomRouteDependencies } from "../../../../route-support";
 
 interface RouteContext { params: Promise<{ id: string; inviteId: string }> }
 interface Coordinator { redeliver(principal: VerifiedPrincipal, classroomId: string, invitationId: string, context: MutationContext): Promise<ClassroomInvite> }
@@ -23,7 +23,7 @@ export function createTeacherRedeliverInvitationRouteHandler(dependencies: Depen
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
-    const dependencies = await productionClassroomDependencies();
-    return createTeacherRedeliverInvitationRouteHandler({ ...dependencies, coordinator: { redeliver: async () => { throw new Error("Production invitation delivery dependencies are not configured"); } } })(request, context);
+    const dependencies = await productionInvitationDeliveryDependencies();
+    return createTeacherRedeliverInvitationRouteHandler(dependencies)(request, context);
   } catch (error) { return serveHttp(request, async () => { throw error; }); }
 }

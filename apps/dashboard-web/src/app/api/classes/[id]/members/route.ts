@@ -2,7 +2,7 @@ import { ClassroomInviteResponseSchema, ClassroomRosterResponseSchema, InviteCla
 
 import type { InvitationRepository, MutationContext } from "../../../../../server/dashboard-store";
 import { authenticateRequest, jsonResponse, parseJsonBody, parseRouteId, requireNoQuery, requireRole, serveHttp } from "../../../../../server/http";
-import { parseRosterPagination, productionClassroomDependencies, projectInvitation, type ClassroomRouteDependencies } from "../../route-support";
+import { parseRosterPagination, productionClassroomDependencies, productionInvitationDeliveryDependencies, projectInvitation, type ClassroomRouteDependencies } from "../../route-support";
 
 interface RouteContext { params: Promise<{ id: string }> }
 interface Coordinator { invite(principal: VerifiedPrincipal, classroomId: string, email: string, context: MutationContext): Promise<ClassroomInvite> }
@@ -46,10 +46,7 @@ export async function GET(request: Request, context: RouteContext): Promise<Resp
 
 export async function POST(request: Request, context: RouteContext): Promise<Response> {
   try {
-    const dependencies = await productionClassroomDependencies();
-    return createClassroomMembersRouteHandlers({
-      ...dependencies,
-      coordinator: { invite: async () => { throw new Error("Production invitation delivery dependencies are not configured"); } },
-    }).POST(request, context);
+    const dependencies = await productionInvitationDeliveryDependencies();
+    return createClassroomMembersRouteHandlers(dependencies).POST(request, context);
   } catch (error) { return serveHttp(request, async () => { throw error; }); }
 }

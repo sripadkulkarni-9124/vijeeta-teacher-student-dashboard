@@ -5,6 +5,7 @@ import {
   GoogleAuthProvider,
   inMemoryPersistence,
   initializeAuth,
+  connectAuthEmulator,
   onAuthStateChanged,
   setPersistence,
   signInWithPopup,
@@ -50,6 +51,20 @@ function config() {
   return values;
 }
 
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1"]);
+
+/**
+ * Local development only. The production image never sets this variable, and a
+ * non-loopback host is ignored, so a deployed browser bundle can never be
+ * pointed at someone else's Auth emulator.
+ */
+export function authEmulatorUrl(host: string | undefined = process.env.NEXT_PUBLIC_FIREBASE_AUTH_EMULATOR_HOST): string | null {
+  if (!host) return null;
+  const [hostname] = host.split(":");
+  if (hostname === undefined || !LOOPBACK_HOSTNAMES.has(hostname)) return null;
+  return `http://${host}`;
+}
+
 async function loadRuntime(): Promise<FirebaseRuntime> {
   const firebaseConfig = config();
   const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
@@ -60,6 +75,10 @@ async function loadRuntime(): Promise<FirebaseRuntime> {
     // A hot-reloaded browser can already have an Auth instance for this app.
     auth = getAuth(app) as unknown as FirebaseAuthLike;
     await setPersistence(auth as unknown as Auth, inMemoryPersistence);
+  }
+  const emulator = authEmulatorUrl();
+  if (emulator !== null) {
+    connectAuthEmulator(auth as unknown as Auth, emulator, { disableWarnings: true });
   }
   return {
     auth,

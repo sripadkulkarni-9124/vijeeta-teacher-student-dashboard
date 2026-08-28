@@ -17,6 +17,7 @@ import type {
   ProfileRepository,
   RosterPagination,
 } from "../../../server/dashboard-store";
+import { loadRuntimeConfig } from "../../../server/runtime-config";
 import { getProductionDashboardRouteDependencies } from "../../../server/dashboard-runtime";
 import {
   HttpError,
@@ -178,6 +179,50 @@ export function parseRosterPagination(request: Request): RosterPagination {
 export async function productionClassroomDependencies() {
   const dependencies = await getProductionDashboardRouteDependencies();
   return { verifier: dependencies.verifier, profiles: dependencies.store, classrooms: dependencies.store, invitations: dependencies.store };
+}
+
+/**
+ * Builds the invitation coordinator used by the sending routes (invite and
+ * redeliver).
+ *
+ * Under the loopback release gate this uses the capture provider, so the whole
+ * teacher-to-student flow is exercisable locally without sending mail.
+ *
+ * In production it fails closed. Real delivery still needs two things that are
+ * deliberately not in this repository: an SMTP transport implementation to pass
+ * to `createSmtpInvitationEmailProvider`, and the approved relay credentials
+ * from Secret Manager. Until both are supplied the routes report the dependency
+ * as unavailable rather than silently dropping an invitation.
+ */
+export async function productionInvitationDeliveryDependencies() {
+  const dependencies = await getProductionDashboardRouteDependencies();
+  const config = loadRuntimeConfig();
+  const pepper = process.env.VIJEETA_INVITE_TOKEN_PEPPER;
+  if (pepper === undefined || pepper.length < 32) throw new Error("Invitation token verification is not configured");
+  if (!config.releaseGate) throw new Error("Invitation email delivery is not configured");
+  const { CaptureInvitationEmailProvider } = await import("../../../server/email-provider");
+  const dashboardUrl = process.env.VIJEETA_PUBLIC_URL ?? "http://127.0.0.1:3010";
+  const capture = new CaptureInvitationEmailProvider({ runtimeMode: "development" });
+  // Local-only convenience: the gate sends no mail, so the invitation link is
+  // written to the server log to make the student journey completable. This is
+  // unreachable in production because the gate is off there.
+  const email = {
+    send: async (input: Parameters<typeof capture.send>[0], attemptId: string) => {
+      const result = await capture.send(input, attemptId);
+      process.stdout.write(`\n[release-gate] invitation for ${input.recipientEmail}: ${input.invitationUrl}\n`);
+      return result;
+    },
+  };
+  const coordinator = new ClassroomInvitationCoordinator({
+    invitations: dependencies.store,
+    tokens: new (await import("../../../server/invite-token")).InviteTokenService({ pepper }),
+    email,
+    providerKind: "capture",
+    dashboardUrl,
+    runtimeMode: "development",
+    createInvitationId: randomUUID,
+  });
+  return { verifier: dependencies.verifier, profiles: dependencies.store, classrooms: dependencies.store, invitations: dependencies.store, coordinator };
 }
 
 export async function productionInvitationReadDependencies() {
