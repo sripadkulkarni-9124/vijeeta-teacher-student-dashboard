@@ -320,8 +320,8 @@ function storeFor(database: FakeFirestore, emitter = new CapturingAuditEmitter()
 
 async function activeTeacher(store: FirestoreDashboardStore, principalToApprove = teacherPrincipal): Promise<void> {
   await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
+  // Teacher onboarding is self-serve; no Admin approval step is involved.
   await store.onboard(principalToApprove, { role: "teacher" }, context());
-  await store.approveTeacher(adminPrincipal, principalToApprove.uid, context("Identity reviewed"));
 }
 
 describe("FirestoreDashboardStore", () => {
@@ -701,15 +701,15 @@ describe("FirestoreDashboardStore", () => {
     });
   });
 
-  it("creates a pending Teacher profile and a hashed verified-email index in one transaction", async () => {
+  it("creates an active Teacher profile and a hashed verified-email index in one transaction", async () => {
     const database = new FakeFirestore();
     const { store } = storeFor(database);
 
     const profile = await store.onboard(teacherPrincipal, { role: "teacher" }, context());
 
     const emailHash = createHash("sha256").update("teacher@example.com").digest("hex");
-    expect(profile.roles).toEqual({ teacher: "pending" });
-    expect(profile.activeRole).toBeNull();
+    expect(profile.roles).toEqual({ teacher: "active" });
+    expect(profile.activeRole).toBe("teacher");
     expect(database.documents.get(`profileEmailIndex/${emailHash}`)).toEqual({
       normalizedEmail: "teacher@example.com",
       firebaseUid: "teacher-uid",
@@ -739,25 +739,25 @@ describe("FirestoreDashboardStore", () => {
     expect(emitter.events).toEqual([]);
   });
 
-  it("allows only an active Admin to approve and suspend a pending Teacher with audited reasons", async () => {
+  it("allows only an active Admin to suspend a Teacher and restore them, with audited reasons", async () => {
     const database = new FakeFirestore();
     const { store } = storeFor(database);
     await store.onboard(teacherPrincipal, { role: "teacher" }, context());
 
-    await expect(store.approveTeacher(otherTeacherPrincipal, teacherPrincipal.uid, context("Forged approval"))).rejects.toMatchObject({ code: "admin_required" });
+    await expect(store.suspendTeacher(otherTeacherPrincipal, teacherPrincipal.uid, context("Forged suspension"))).rejects.toMatchObject({ code: "admin_required" });
     await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
-    const approved = await store.approveTeacher(adminPrincipal, teacherPrincipal.uid, context("Identity reviewed"));
     const suspended = await store.suspendTeacher(adminPrincipal, teacherPrincipal.uid, context("Policy review"));
+    const restored = await store.approveTeacher(adminPrincipal, teacherPrincipal.uid, context("Review cleared"));
 
-    expect(approved.roles.teacher).toBe("active");
-    expect(approved.activeRole).toBe("teacher");
     expect(suspended.roles.teacher).toBe("suspended");
     expect(suspended.activeRole).toBeNull();
+    expect(restored.roles.teacher).toBe("active");
+    expect(restored.activeRole).toBe("teacher");
     expect(database.created("auditEvents").map((write) => write.data.action)).toEqual([
       "profile.onboarded",
       "admin.bootstrap",
-      "teacher.approved",
       "teacher.suspended",
+      "teacher.approved",
     ]);
   });
 
@@ -766,7 +766,6 @@ describe("FirestoreDashboardStore", () => {
     const { store } = storeFor(database);
     await activeTeacher(store);
     await store.onboard(otherTeacherPrincipal, { role: "teacher" }, context());
-    await store.approveTeacher(adminPrincipal, otherTeacherPrincipal.uid, context("Identity reviewed"));
 
     const classroom = await store.create(teacherPrincipal, { name: "Physics A" }, context());
     await expect(store.archive(otherTeacherPrincipal, classroom.id, context("Cross-owner attempt"))).rejects.toMatchObject({ code: "classroom_forbidden" });
@@ -796,10 +795,12 @@ describe("FirestoreDashboardStore", () => {
     expect(database.documents.get(`classrooms/${classroom.id}`)).toMatchObject({ status: "active" });
   });
 
-  it("rejects classroom creation by a pending Teacher", async () => {
+  it("rejects classroom creation by a Teacher who is not active", async () => {
     const database = new FakeFirestore();
     const { store } = storeFor(database);
-    await store.onboard(teacherPrincipal, { role: "teacher" }, context());
+    await activeTeacher(store);
+    // Onboarding is self-serve, so suspension is how a Teacher loses authority.
+    await store.suspendTeacher(adminPrincipal, teacherPrincipal.uid, context("Policy review"));
 
     await expect(store.create(teacherPrincipal, { name: "Physics A" }, context())).rejects.toMatchObject({ code: "active_teacher_required" });
     expect(database.created("classrooms")).toHaveLength(0);

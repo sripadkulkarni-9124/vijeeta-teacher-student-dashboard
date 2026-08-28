@@ -63,6 +63,7 @@ import {
 
 const DASHBOARD_DATABASE_ID = "vijeeta-dashboard";
 const MAX_PAGE_SIZE = 100;
+type TeacherRoleState = "pending" | "active" | "suspended";
 // Assignment + idempotency key + audit mirror consume three writes in the same atomic transaction.
 const MAX_ASSIGNMENT_RECIPIENTS = 497;
 
@@ -213,8 +214,11 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
         firebaseUid: principal.uid,
         verifiedEmail,
         displayName: principal.displayName,
-        roles: input.role === "student" ? { student: "active" } : { teacher: "pending" },
-        activeRole: input.role === "student" ? "student" : null,
+        // Teacher self-serves: onboarding grants the role immediately rather
+        // than waiting for an Admin. Admin remains bootstrap-only, and an Admin
+        // can still suspend a Teacher afterwards.
+        roles: input.role === "student" ? { student: "active" } : { teacher: "active" },
+        activeRole: input.role,
         onboardingCompleted: true,
         schemaVersion: 2,
         createdAt: context.now,
@@ -442,7 +446,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     targetUid: string,
     context: MutationContext,
   ): Promise<DashboardProfileV2> {
-    return this.transitionTeacher(principalCandidate, targetUid, "pending", "active", "teacher.approved", context);
+    return this.transitionTeacher(principalCandidate, targetUid, ["pending", "suspended"], "active", "teacher.approved", context);
   }
 
   async suspendTeacher(
@@ -1369,7 +1373,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
   private async transitionTeacher(
     principalCandidate: VerifiedPrincipal,
     targetUid: string,
-    from: "pending" | "active",
+    from: TeacherRoleState | readonly TeacherRoleState[],
     to: "active" | "suspended",
     action: "teacher.approved" | "teacher.suspended",
     context: MutationContext,
@@ -1382,8 +1386,9 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
       const targetSnapshot = await transaction.get(targetReference);
       if (!targetSnapshot.exists) throw new DashboardStoreError("Target profile does not exist", "profile_not_found");
       const target = profileFromSnapshot(targetSnapshot, targetUid);
-      if (target.roles.teacher !== from) {
-        throw new DashboardStoreError(`Teacher must be ${from} before this transition`, "teacher_transition_invalid");
+      const allowedFrom = Array.isArray(from) ? from : [from];
+      if (!allowedFrom.includes(target.roles.teacher as (typeof allowedFrom)[number])) {
+        throw new DashboardStoreError(`Teacher must be ${allowedFrom.join(" or ")} before this transition`, "teacher_transition_invalid");
       }
       const updated = DashboardProfileV2Schema.parse({
         ...target,
@@ -1397,7 +1402,9 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
         targetType: "profile",
         targetId: targetUid,
         context: { ...context, reason },
-        before: changes("roles.teacher", from),
+        // Record the state the profile was actually in, not the set of states
+        // the transition accepts.
+        before: changes("roles.teacher", target.roles.teacher ?? null),
         after: changes("roles.teacher", to),
       });
       return { value: updated, event };

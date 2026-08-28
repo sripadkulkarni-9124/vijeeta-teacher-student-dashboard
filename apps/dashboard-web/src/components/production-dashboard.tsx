@@ -525,7 +525,7 @@ export function ConnectedDashboardNavigation({
         <fieldset className="academic-role-options">
           <legend>I am a</legend>
           <label><input checked={signUpRole === "student"} name="signup-role" onChange={() => setSignUpRole("student")} type="radio" value="student" /><strong>Student</strong><small>Join classes and take assigned tests.</small></label>
-          <label><input checked={signUpRole === "teacher"} name="signup-role" onChange={() => setSignUpRole("teacher")} type="radio" value="teacher" /><strong>Teacher</strong><small>Request approval to manage classes.</small></label>
+          <label><input checked={signUpRole === "teacher"} name="signup-role" onChange={() => setSignUpRole("teacher")} type="radio" value="teacher" /><strong>Teacher</strong><small>Create classes, invite students, and assign tests.</small></label>
         </fieldset>
       ) : null}
 
@@ -556,7 +556,7 @@ export function ConnectedDashboardNavigation({
   if (resolved.state === "onboarding") return (
     <main className="academic-auth-screen"><section className="academic-auth-card academic-auth-card--wide"><p className="academic-auth-brand">ViJEEta</p><h1>Choose your workspace</h1><p>Choose how you will use Vijeeta. Admin access cannot be selected here.</p>
       <div className="academic-role-options"><button type="button" aria-label="Continue as student" onClick={() => void onboard("student")}><span aria-hidden="true">▤</span><strong>Student</strong><small>Join classes and take assigned tests.</small></button>
-      <button type="button" aria-label="Request Teacher access" onClick={() => void onboard("teacher")}><span aria-hidden="true">◇</span><strong>Teacher</strong><small>Request approval to manage classes.</small></button></div>
+      <button type="button" aria-label="Continue as teacher" onClick={() => void onboard("teacher")}><span aria-hidden="true">◇</span><strong>Teacher</strong><small>Create classes, invite students, and assign tests.</small></button></div>
     </section></main>
   );
   if (resolved.state === "error" || resolved.state === "signed_out" || profile === null) return <main className="academic-auth-screen"><section className="academic-auth-card"><h1>Workspace unavailable</h1><p role="alert">The server profile has no active workspace.</p></section></main>;
@@ -570,7 +570,7 @@ export function ConnectedDashboardNavigation({
     </nav>
   );
   if (resolved.state === "pending_teacher") return (
-    <main className="academic-auth-screen"><section className="academic-auth-card"><span className="academic-state-icon" aria-hidden="true">◷</span><h1>Teacher approval pending</h1><p>An Admin must approve Teacher access before you can continue.</p>{workspaceNavigation()}</section></main>
+    <main className="academic-auth-screen"><section className="academic-auth-card"><span className="academic-state-icon" aria-hidden="true">◷</span><h1>Teacher access on hold</h1><p>This Teacher workspace is awaiting an Admin review. Choose another active workspace or contact an administrator.</p>{workspaceNavigation()}</section></main>
   );
   if (resolved.state === "suspended") return (
     <main className="academic-auth-screen"><section className="academic-auth-card"><span className="academic-state-icon academic-state-icon--warning" aria-hidden="true">!</span><h1>Workspace suspended</h1><p>This workspace is unavailable. Choose another active workspace or contact an administrator.</p>{workspaceNavigation()}</section></main>

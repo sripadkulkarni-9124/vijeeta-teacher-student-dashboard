@@ -112,16 +112,19 @@ describe("ProductionDashboard", () => {
     };
     render(<ConnectedDashboardNavigation api={connected} requestedRoute={requestedRoute} />);
 
-    expect(await screen.findByText(/redirecting to your authorized workspace/i)).toBeVisible();
-    expect(screen.queryByText(/student workspace|teacher workspace|admin workspace/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(/checking your dashboard access/i);
     await waitFor(() => expect(window.location.pathname).toBe(canonicalPath));
+    // The workspace that was asked for is never rendered; the viewer is sent to
+    // whichever one their server profile actually authorizes.
+    expect(screen.queryByRole("heading", { name: new RegExp(`${requestedRoute} workspace`, "i") })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /administration/i })).not.toBeInTheDocument();
   });
 
-  it("offers only Student and Teacher during first-use onboarding and keeps Teacher pending", async () => {
+  it("offers only Student and Teacher during first-use onboarding and grants Teacher immediately", async () => {
     const connected: ConnectedNavigationApi = {
       auth: api().auth,
       getProfile: vi.fn(async () => { throw Object.assign(new Error("onboarding"), { code: "profile_onboarding_required", status: 404 }); }),
-      onboard: vi.fn(async () => serverProfile({ roles: { teacher: "pending" }, activeRole: null })),
+      onboard: vi.fn(async () => serverProfile({ roles: { teacher: "active" }, activeRole: "teacher" })),
       setActiveRole: vi.fn(),
       inspectInvitation: vi.fn(),
       acceptInvitation: vi.fn(),
@@ -129,11 +132,12 @@ describe("ProductionDashboard", () => {
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="onboarding" />);
 
     expect(await screen.findByRole("button", { name: /continue as student/i })).toBeVisible();
-    expect(screen.getByRole("button", { name: /request teacher access/i })).toBeVisible();
+    expect(screen.getByRole("button", { name: /continue as teacher/i })).toBeVisible();
     expect(screen.queryByRole("button", { name: /admin/i })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /request teacher access/i }));
-    expect(await screen.findByRole("heading", { name: /teacher approval pending/i })).toBeVisible();
-    expect(window.location.pathname).toBe("/pending-teacher");
+    fireEvent.click(screen.getByRole("button", { name: /continue as teacher/i }));
+    // Teacher onboarding is self-serve: it lands in the workspace, not a wait state.
+    expect(await screen.findByRole("heading", { name: /teacher workspace/i })).toBeVisible();
+    expect(window.location.pathname).toBe("/teacher");
   });
 
   it("shows only active server roles and persists a role switch before replacing navigation", async () => {
@@ -202,7 +206,7 @@ describe("ProductionDashboard", () => {
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="root" />);
 
     fireEvent.click(await screen.findByRole("tab", { name: /sign up/i }));
-    fireEvent.click(screen.getByRole("radio", { name: /teacher/i }));
+    fireEvent.click(screen.getByRole("radio", { name: /^Teacher/ }));
     fireEvent.click(screen.getByRole("button", { name: /sign up with google/i }));
 
     await waitFor(() => expect(connected.auth.signInWithGoogle).toHaveBeenCalled());
@@ -221,8 +225,9 @@ describe("ProductionDashboard", () => {
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="root" />);
 
     fireEvent.click(await screen.findByRole("tab", { name: /sign up/i }));
-    expect(screen.getByRole("radio", { name: /student/i })).toBeChecked();
+    expect(screen.getByRole("radio", { name: /^Student/ })).toBeChecked();
     expect(screen.queryByRole("radio", { name: /admin/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: /^Teacher/ })).not.toBeChecked();
   });
 
   it("lands in the workspace after a client-side sign-in instead of stalling on the redirect", async () => {
@@ -267,7 +272,7 @@ describe("ProductionDashboard", () => {
     };
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="onboarding" />);
 
-    fireEvent.click(await screen.findByRole("button", { name: /request teacher access/i }));
+    fireEvent.click(await screen.findByRole("button", { name: /continue as teacher/i }));
 
     // The server rejects an unverified principal for Teacher, so the UI must not
     // send the request and then surface a bare "not permitted".
