@@ -12,17 +12,17 @@ not. A green gate here is not deployment approval; the approval gates in
 | --- | --- |
 | Date | 2026-08-28 |
 | Branch | `feat/connected-dashboard` |
-| Node | v22.22.2 (**off-contract**; `engines` requires `>=24.19.0 <25`) |
+| Node | v24.19.0 (on-contract; pinned by `.node-version` and `.nvmrc`) |
 | Java | Temurin 21.0.12.1, user-local at `~/.local/jdk` (emulator dependency only) |
 | Auth emulator | `127.0.0.1:9099` |
 | Firestore emulator | `127.0.0.1:8080` |
-| Docker | unavailable (daemon not running) |
+| Docker | Docker Desktop 29.7.2 |
 
 ## Monorepo checks
 
 | Check | Result |
 | --- | --- |
-| `pnpm -r test` | 413 passed, 14 skipped, 53 files |
+| `pnpm -r test` | 426 passed, 36 skipped |
 | `pnpm -r typecheck` | clean |
 | `pnpm -r lint` | clean, `--max-warnings=0` |
 | `pnpm --filter @vijeeta/dashboard-web build` | clean, 27 API routes + 9 pages |
@@ -38,7 +38,7 @@ Run with:
 FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099 FIRESTORE_EMULATOR_HOST=127.0.0.1:8080 pnpm --filter @vijeeta/dashboard-web exec vitest run src/test/connected-e2e-smoke.test.ts
 ```
 
-Result: **14 passed / 14**.
+Result: **32 passed / 32**.
 
 The gate drives the real route handlers, the real `FirestoreDashboardStore`, the
 real `FirestoreProfileStore`, the real `FirebaseIdTokenVerifier`, and the real
@@ -125,25 +125,105 @@ What this does not prove: the rules have never been deployed, `firebase deploy`
 was not run, and no cloud resource was touched. The named database still does
 not exist, so nothing is currently enforcing them.
 
+## Cloud resources created 2026-08-28
+
+Created by the project owner after the recorded approval, then verified read-only:
+
+| Resource | State |
+| --- | --- |
+| `projects/neetcompanion-50b1f/databases/vijeeta-dashboard` | `asia-south1`, FIRESTORE_NATIVE, delete protection ENABLED, PITR ENABLED |
+| `vijeeta-dashboard@neetcompanion-50b1f.iam.gserviceaccount.com` | created, enabled, keyless |
+| IAM binding | `roles/datastore.user`, conditioned on `resource.name=="projects/neetcompanion-50b1f/databases/vijeeta-dashboard"` |
+
+No Cloud Run service exists yet, and no rules or indexes have been deployed.
+
+## Container image
+
+Built from `apps/dashboard-web/Dockerfile` and run locally:
+
+| Check | Result |
+| --- | --- |
+| image size | 423 MB |
+| `/api/health` | `status: ok`, build reports the source SHA |
+| runtime user | `uid=1001(nextjs)` — non-root |
+| `/api/demo` | 404 — the fixture route is absent from the image |
+| unauthenticated `/api/admin/profiles` | 401 |
+| leaked `FIREBASE_AUTH_EMULATOR_HOST` | 503, refuses to serve |
+
+The local image was built with a placeholder `NEXT_PUBLIC_FIREBASE_API_KEY` and
+is tagged `localtest-<sha>` rather than the bare SHA, so it must not be pushed.
+The release build supplies the real public key from the approved build
+environment.
+
+## Independent security review
+
+An adversarial review covering identity and role authority, IDOR, invitation
+crypto, Firestore isolation, redaction, the V3 boundary, and the browser code
+reported one High and five Medium findings. Fixed and covered by tests:
+
+- **High — authentication bypass.** A production runtime did not reject
+  `FIREBASE_AUTH_EMULATOR_HOST` / `FIRESTORE_EMULATOR_HOST`. firebase-admin
+  silently switches to the emulator verifier, which skips JWT signature
+  verification, so a forged unsigned token naming a bootstrap email would have
+  become an Admin. The runtime now fails closed, verified in the container.
+  The loopback check was also parsing hosts by splitting on `:`, which accepted
+  `127.0.0.1:9099@attacker.example`; it now uses the URL parser.
+- **Medium — four teacher actions were unreachable.** Archive, revoke, and
+  redeliver sent no JSON body (rejected 415 before the reason was read) and
+  assignment creation omitted the required idempotency key (400).
+- **Medium — invitation acceptance was unreachable in the browser.** The token
+  was captured from the link and discarded; nothing called inspect or accept.
+- **Medium — missing Firestore indexes.** See below.
+- **Medium — legacy profile backdoor.** A legacy-shaped profile document mapped
+  an `allowedRoles` teacher entitlement straight to an active Teacher, skipping
+  Admin approval. It now maps to `pending`.
+- **Medium — cosmetic redaction defect** in `sanitizeError`: a non-capturing
+  group makes the cookie replacement emit a literal `$1`. The secret is still
+  removed, so this is not a leak. Not yet fixed.
+
+Low-severity items not yet addressed: a classroom-existence oracle (404 vs 403,
+mitigated by v4 UUID identifiers), client-supplied correlation IDs acting as
+idempotency keys, and a backslash form missed by the client-side runner-path
+check that no reachable server response can produce.
+
+## Firestore indexes
+
+Four composite queries had no declared index. Firestore answers
+`FAILED_PRECONDITION`, which maps to a generic 503 that reports itself as
+retryable but never resolves, so assignment creation and the Admin invitation
+feed would have been dead in production. The emulator does not enforce index
+requirements, so every local suite passed regardless.
+
+| Query | Index |
+| --- | --- |
+| assignment recipients | `members`, COLLECTION, `status ASC, studentUid ASC` |
+| Admin invitation feed | `invites`, COLLECTION_GROUP, `createdAt DESC, id DESC` |
+| assignment id lookup | `assignments.id`, COLLECTION_GROUP override |
+| invitation id lookup | `invites.id`, COLLECTION_GROUP override |
+
+Each query is built from its exported index constant, and the constants are
+asserted against `firestore.indexes.dashboard.json`, so the two cannot drift.
+
+**These indexes have not been deployed.** They must be created and finish
+building before the first production read.
+
 ## Not covered — still open before deployment
 
-1. **Cloud Run runtime identity and IAM.** The dedicated service account and the
-   per-database conditional binding are unapproved and uncreated.
-2. **Firestore security rules.** Written and tested locally; see
-   [Firestore security rules](#firestore-security-rules) below. Not deployed,
-   and the deployment step is unapproved.
-3. **Real SMTP delivery.** Capture-only here. The approved SMTP host and
-   credentials must come from Secret Manager, not source.
-4. **V3 assignment, launch, and insight adapters.** The store-side flows are
-   covered; the adapters are exercised by unit tests but not by this integrated
-   gate, because the transport requires `https:` on port 443 and is faked here.
-5. **Named Firestore database.** `projects/neetcompanion-50b1f/databases/vijeeta-dashboard`
-   does not exist. Read-only preflight on 2026-08-28 returned `NOT_FOUND`, which
-   is expected evidence, not permission to create it.
-6. **Node version.** Local Node is v22.22.2; the image and `engines` require 24.
-7. **Container image.** Docker is unavailable locally, so the immutable image has
-   never been built or run.
-8. **Independent security and code review.** Not yet performed.
+1. **Cloud Run service.** Not created. The runtime identity exists but nothing
+   runs as it yet.
+2. **Rules and indexes are not deployed.** Both are written and tested locally.
+   Deploying each is a separate approved cloud write.
+3. **Real SMTP delivery.** Capture-only. `createSmtpInvitationEmailProvider`
+   requires a transport factory and no mail library is a dependency of this
+   repository, so production invitation delivery fails closed. Adding the
+   library and supplying the approved relay credentials from Secret Manager are
+   both still open.
+4. **The V3 HTTP transport itself.** TLS, real upstream schemas, timeouts, and
+   redirects are faked at the transport boundary by design.
+5. **Registry vulnerability scanning** is disabled on the Artifact Registry
+   repository, so images would ship unscanned.
+6. **Remaining review findings.** The Medium redaction defect and the three Low
+   findings above.
 
 ## Preflight evidence recorded 2026-08-28
 
