@@ -6,6 +6,8 @@ import type { ConnectedDashboardRole, DashboardProfileV2 } from "@vijeeta/api-co
 
 import { createConnectedApi, ConnectedApiError } from "@/client/connected-api";
 import { createFirebaseAuth } from "@/client/firebase-auth";
+import { AcademicShell } from "@/components/academic-shell";
+import { AdminDashboard } from "@/features/admin/admin-dashboard";
 import {
   createProductionApi,
   ProductionApiError,
@@ -370,28 +372,28 @@ export function ConnectedDashboardNavigation({
     } catch (caught) { setError(connectedMessage(caught)); setStatus("error"); }
   };
 
-  if (status === "loading") return <p role="status">Checking your dashboard access…</p>;
-  if (status === "error") return <p role="alert">{error}</p>;
+  if (status === "loading") return <main className="academic-auth-screen" aria-busy="true"><section className="academic-auth-card"><span className="academic-spinner" aria-hidden="true" /><p role="status">Checking your dashboard access…</p></section></main>;
+  if (status === "error") return <main className="academic-auth-screen"><section className="academic-auth-card"><h1>Access could not be verified</h1><p role="alert">{error}</p></section></main>;
   if (user === null || status === "signed_out") return (
-    <main><h1>Sign in to Vijeeta</h1><p>Use Google to sign in or create your account.</p>
-      <button type="button" disabled={busy} onClick={() => void signIn()}>{busy ? "Signing in…" : "Continue with Google"}</button>
+    <main className="academic-auth-screen"><section className="academic-auth-card"><p className="academic-auth-brand">ViJEEta</p><h1>Sign in to Vijeeta</h1><p>Teachers and students use the same secure Google sign-in.</p>
+      <button className="academic-google-button" type="button" disabled={busy} onClick={() => void signIn()}><span aria-hidden="true">G</span>{busy ? "Signing in…" : "Continue with Google"}</button>
       {error ? <p role="alert">{error}</p> : null}
-    </main>
+    </section></main>
   );
 
   const resolved = resolveDashboardRoute({ authenticated: true, profile });
   const guard = resolveProtectedRoute(currentRoute, true, profile);
-  if (!guard.render) return <p role="status">Redirecting to your authorized workspace…</p>;
+  if (!guard.render) return <main className="academic-auth-screen"><section className="academic-auth-card" aria-busy="true"><p role="status">Redirecting to your authorized workspace…</p></section></main>;
   if (currentRoute === "invite") return (
-    <main><h1>Classroom invitation</h1><p>{invitationLinkState === "missing" ? "Open the invitation link from your email to continue." : "Your invitation is held only in this tab while we verify it."}</p></main>
+    <main className="academic-auth-screen"><section className="academic-auth-card"><p className="academic-auth-brand">ViJEEta</p><h1>Classroom invitation</h1><p>{invitationLinkState === "missing" ? "Open the invitation link from your email to continue." : "Your invitation is held only in this tab while we verify it."}</p></section></main>
   );
   if (resolved.state === "onboarding") return (
-    <main><h1>Choose your workspace</h1><p>Admin access cannot be selected here.</p>
-      <button type="button" onClick={() => void onboard("student")}>Continue as student</button>
-      <button type="button" onClick={() => void onboard("teacher")}>Request Teacher access</button>
-    </main>
+    <main className="academic-auth-screen"><section className="academic-auth-card academic-auth-card--wide"><p className="academic-auth-brand">ViJEEta</p><h1>Choose your workspace</h1><p>Choose how you will use Vijeeta. Admin access cannot be selected here.</p>
+      <div className="academic-role-options"><button type="button" aria-label="Continue as student" onClick={() => void onboard("student")}><span aria-hidden="true">▤</span><strong>Student</strong><small>Join classes and take assigned tests.</small></button>
+      <button type="button" aria-label="Request Teacher access" onClick={() => void onboard("teacher")}><span aria-hidden="true">◇</span><strong>Teacher</strong><small>Request approval to manage classes.</small></button></div>
+    </section></main>
   );
-  if (resolved.state === "error" || resolved.state === "signed_out" || profile === null) return <p role="alert">The server profile has no active workspace.</p>;
+  if (resolved.state === "error" || resolved.state === "signed_out" || profile === null) return <main className="academic-auth-screen"><section className="academic-auth-card"><h1>Workspace unavailable</h1><p role="alert">The server profile has no active workspace.</p></section></main>;
 
   const activeRoles = (["student", "teacher", "admin"] as const).filter((role) => profile.roles[role] === "active");
   const workspaceNavigation = (exclude?: ConnectedDashboardRole) => (
@@ -402,10 +404,28 @@ export function ConnectedDashboardNavigation({
     </nav>
   );
   if (resolved.state === "pending_teacher") return (
-    <main><h1>Teacher approval pending</h1><p>An Admin must approve Teacher access before you can continue.</p>{workspaceNavigation()}</main>
+    <main className="academic-auth-screen"><section className="academic-auth-card"><span className="academic-state-icon" aria-hidden="true">◷</span><h1>Teacher approval pending</h1><p>An Admin must approve Teacher access before you can continue.</p>{workspaceNavigation()}</section></main>
   );
   if (resolved.state === "suspended") return (
-    <main><h1>Workspace suspended</h1><p>This workspace is unavailable. Choose another active workspace or contact an administrator.</p>{workspaceNavigation()}</main>
+    <main className="academic-auth-screen"><section className="academic-auth-card"><span className="academic-state-icon academic-state-icon--warning" aria-hidden="true">!</span><h1>Workspace suspended</h1><p>This workspace is unavailable. Choose another active workspace or contact an administrator.</p>{workspaceNavigation()}</section></main>
+  );
+  if (resolved.state === "admin") return (
+    <AcademicShell
+      profile={{ displayName: profile.displayName, email: profile.verifiedEmail, activeRole: "admin" }}
+      navigation={[
+        { label: "Overview", href: "/admin", icon: "⌂" },
+        { label: "Profiles", href: "/admin#admin-profiles", icon: "◎" },
+        { label: "Classes", href: "/admin#admin-classes", icon: "◇" },
+        { label: "Invitations", href: "/admin#admin-invitations", icon: "✉" },
+        { label: "Audit", href: "/admin#admin-audit", icon: "✓" },
+      ]}
+      currentHref="/admin"
+      workspaceActions={activeRoles.filter((role) => role !== "admin")}
+      onWorkspaceSwitch={(role) => void switchRole(role)}
+      onSignOut={() => void signOut()}
+    >
+      <AdminDashboard />
+    </AcademicShell>
   );
   return (
     <main>
