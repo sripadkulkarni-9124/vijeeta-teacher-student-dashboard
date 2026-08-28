@@ -8,6 +8,9 @@ import type { AuditEmissionStatus, AuditEmissionStatusReporter, AuditEmitter } f
 import type { MutationContext } from "./dashboard-store";
 import {
   FirestoreDashboardStore,
+  ADMIN_INVITATION_QUERY_INDEX,
+  ASSIGNMENT_RECIPIENT_QUERY_INDEX,
+  COLLECTION_GROUP_ID_LOOKUPS,
   STUDENT_ASSIGNMENT_QUERY_INDEX,
   type FirestoreCollectionReference,
   type FirestoreDashboardDocumentReference,
@@ -228,6 +231,25 @@ describe("named dashboard Firestore index contract", () => {
       ],
     });
   });
+
+  it("checks in the assignment recipient and Admin invitation indexes", () => {
+    expect(dashboardIndexes.indexes).toContainEqual(ASSIGNMENT_RECIPIENT_QUERY_INDEX);
+    expect(dashboardIndexes.indexes).toContainEqual(ADMIN_INVITATION_QUERY_INDEX);
+  });
+
+  it("checks in a collection-group index for every id lookup, keeping the collection-scoped ones", () => {
+    COLLECTION_GROUP_ID_LOOKUPS.forEach((collectionGroup) => {
+      const override = dashboardIndexes.fieldOverrides.find(
+        (entry) => entry.collectionGroup === collectionGroup && entry.fieldPath === "id",
+      );
+      expect(override, `${collectionGroup}.id override`).toBeDefined();
+      expect(override!.indexes.some((index) => index.queryScope === "COLLECTION_GROUP")).toBe(true);
+      // A field override replaces automatic indexing, so the collection-scoped
+      // entries must be restated or ordinary lookups regress.
+      expect(override!.indexes.filter((index) => index.queryScope === "COLLECTION").map((index) => index.order).sort())
+        .toEqual(["ASCENDING", "DESCENDING"]);
+    });
+  });
 });
 
 const adminPrincipal = principal("admin-uid", "admin@example.com", true);
@@ -397,16 +419,16 @@ describe("FirestoreDashboardStore", () => {
 
     await expect(store.getProfile("admin-uid")).resolves.toMatchObject({
       internalProfileId: "legacy-admin-profile",
-      roles: { teacher: "active" },
-      activeRole: "teacher",
+      roles: { teacher: "pending" },
+      activeRole: null,
       schemaVersion: 2,
     });
     const bootstrapped = await store.bootstrapAdmin(adminPrincipal, BOOTSTRAP, context());
 
-    expect(bootstrapped.roles).toEqual({ teacher: "active", admin: "active" });
+    expect(bootstrapped.roles).toEqual({ teacher: "pending", admin: "active" });
     expect(database.documents.get("profiles/admin-uid")).toMatchObject({
       schemaVersion: 2,
-      roles: { teacher: "active", admin: "active" },
+      roles: { teacher: "pending", admin: "active" },
       activeRole: "admin",
     });
     expect(database.documents.get("profiles/admin-uid")).not.toHaveProperty("allowedRoles");
@@ -1325,5 +1347,40 @@ describe("FirestoreDashboardStore", () => {
     database.documents.delete(`profileEmailIndex/${createHash("sha256").update("student@example.com").digest("hex")}`);
     await expect(store.prepareAssignment(teacherPrincipal, base, context())).rejects.toMatchObject({ code: "assignment_recipients_unavailable" });
     expect(database.created("assignments")).toHaveLength(0);
+  });
+});
+
+describe("legacy profile documents never bypass Teacher approval", () => {
+  const legacyDocument = (overrides: Record<string, unknown> = {}) => ({
+    internalProfileId: "legacy-profile",
+    firebaseUid: "legacy-uid",
+    allowedRoles: ["teacher"],
+    activeRole: "teacher",
+    onboardingCompleted: true,
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...overrides,
+  });
+
+  it("maps a legacy teacher entitlement to pending, so an unapproved Teacher cannot act", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    database.documents.set("profiles/legacy-uid", legacyDocument());
+
+    await expect(store.getProfile("legacy-uid")).resolves.toMatchObject({
+      roles: { teacher: "pending" },
+      activeRole: null,
+    });
+  });
+
+  it("keeps a legacy student entitlement active, because Student needs no approval", async () => {
+    const database = new FakeFirestore();
+    const { store } = storeFor(database);
+    database.documents.set("profiles/legacy-uid", legacyDocument({ allowedRoles: ["student"], activeRole: "student" }));
+
+    await expect(store.getProfile("legacy-uid")).resolves.toMatchObject({
+      roles: { student: "active" },
+      activeRole: "student",
+    });
   });
 });

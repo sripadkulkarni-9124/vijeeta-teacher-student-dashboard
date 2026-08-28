@@ -66,6 +66,37 @@ const MAX_PAGE_SIZE = 100;
 // Assignment + idempotency key + audit mirror consume three writes in the same atomic transaction.
 const MAX_ASSIGNMENT_RECIPIENTS = 497;
 
+/**
+ * Composite queries need a declared index. The Firestore emulator does not
+ * enforce that, so production would answer FAILED_PRECONDITION — surfaced as a
+ * generic, permanently "retryable" 503. Each query below is built from its index
+ * constant so the two cannot drift, and the constants are asserted against
+ * firestore.indexes.dashboard.json in the store test.
+ */
+export const ASSIGNMENT_RECIPIENT_QUERY_INDEX = {
+  collectionGroup: "members",
+  queryScope: "COLLECTION",
+  fields: [
+    { fieldPath: "status", order: "ASCENDING" },
+    { fieldPath: "studentUid", order: "ASCENDING" },
+  ],
+} as const;
+
+export const ADMIN_INVITATION_QUERY_INDEX = {
+  collectionGroup: "invites",
+  queryScope: "COLLECTION_GROUP",
+  fields: [
+    { fieldPath: "createdAt", order: "DESCENDING" },
+    { fieldPath: "id", order: "DESCENDING" },
+  ],
+} as const;
+
+/**
+ * Automatic single-field indexes are collection-scoped, so a collection-group
+ * equality needs an explicit override.
+ */
+export const COLLECTION_GROUP_ID_LOOKUPS = ["assignments", "invites"] as const;
+
 export const STUDENT_ASSIGNMENT_QUERY_INDEX = {
   collectionGroup: "assignments",
   queryScope: "COLLECTION",
@@ -340,7 +371,10 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     await this.requireActiveAdmin(principal.uid);
     const page = PaginationRequestSchema.parse(pageCandidate);
     const cursor = page.cursor === undefined ? null : decodeCursor(page.cursor, "invitations");
-    let query = this.firestore.collectionGroup("invites").orderBy("createdAt", "desc").orderBy("id", "desc");
+    const [invitationOrder, invitationTiebreak] = ADMIN_INVITATION_QUERY_INDEX.fields;
+    let query = this.firestore.collectionGroup(ADMIN_INVITATION_QUERY_INDEX.collectionGroup)
+      .orderBy(invitationOrder.fieldPath, indexOrder(invitationOrder.order))
+      .orderBy(invitationTiebreak.fieldPath, indexOrder(invitationTiebreak.order));
     if (cursor !== null) query = query.startAfter(cursor.createdAt, cursor.id);
     const snapshot = await query.limit(page.limit + 1).get();
     const items = snapshot.docs.slice(0, page.limit).map((document) => invitationFromSnapshot(document));
@@ -981,9 +1015,10 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
       return replay.value;
     }
 
-    const memberCandidates = await this.classroomReference(classroomId).collection("members")
-      .where("status", "==", "active")
-      .orderBy("studentUid", "asc")
+    const [recipientStatus, recipientOrder] = ASSIGNMENT_RECIPIENT_QUERY_INDEX.fields;
+    const memberCandidates = await this.classroomReference(classroomId).collection(ASSIGNMENT_RECIPIENT_QUERY_INDEX.collectionGroup)
+      .where(recipientStatus.fieldPath, "==", "active")
+      .orderBy(recipientOrder.fieldPath, indexOrder(recipientOrder.order))
       .limit(MAX_ASSIGNMENT_RECIPIENTS + 1)
       .get();
     if (memberCandidates.docs.length === 0 || memberCandidates.docs.length > MAX_ASSIGNMENT_RECIPIENTS) {
@@ -1637,18 +1672,30 @@ function profileFromSnapshot(snapshot: FirestoreDashboardDocumentSnapshot, expec
   return profile;
 }
 
+/**
+ * A legacy-shaped document has not been through this service's Teacher
+ * lifecycle, so a legacy `teacher` entitlement becomes `pending`, never
+ * `active`. Granting `active` here would let any document written outside the
+ * approval path — a migration, a backfill, a console edit — mint a Teacher who
+ * can create classes and assignments without an Admin ever approving them.
+ * A legacy `student` entitlement stays active because Student needs no approval.
+ */
 function legacyProfileToCanonical(data: Record<string, unknown>): DashboardProfileV2 {
   const legacy = DashboardProfileSchema.parse(data);
+  const roles = {
+    ...(legacy.allowedRoles.includes("student") ? { student: "active" as const } : {}),
+    ...(legacy.allowedRoles.includes("teacher") ? { teacher: "pending" as const } : {}),
+  };
+  const activeRole = legacy.activeRole !== null && roles[legacy.activeRole as keyof typeof roles] === "active"
+    ? legacy.activeRole
+    : null;
   return DashboardProfileV2Schema.parse({
     internalProfileId: legacy.internalProfileId,
     firebaseUid: legacy.firebaseUid,
     verifiedEmail: null,
     displayName: null,
-    roles: {
-      ...(legacy.allowedRoles.includes("student") ? { student: "active" as const } : {}),
-      ...(legacy.allowedRoles.includes("teacher") ? { teacher: "active" as const } : {}),
-    },
-    activeRole: legacy.activeRole,
+    roles,
+    activeRole,
     onboardingCompleted: legacy.onboardingCompleted,
     schemaVersion: 2,
     createdAt: legacy.createdAt,
