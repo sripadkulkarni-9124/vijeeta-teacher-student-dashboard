@@ -40,7 +40,7 @@ describe("production fixture boundary", () => {
     expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_API_KEY=${_FIREBASE_API_KEY}");
     expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=neetcompanion-50b1f.firebaseapp.com");
     expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_PROJECT_ID=neetcompanion-50b1f");
-    expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_APP_ID=1:840759107103:web:84391539f65c7aa4abff2a");
+    expect(cloudBuild).toContain("NEXT_PUBLIC_FIREBASE_APP_ID=1:840759107103:web:68dfff0b2e8c209babff2a");
     expect(cloudBuild).toContain("asia-south1-docker.pkg.dev/neetcompanion-50b1f/cloud-run-source-deploy/vijeeta-dashboard:");
     expect(cloudBuild).toContain("^[0-9a-f]{40}$");
     expect(cloudBuild).not.toContain("latest");

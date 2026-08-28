@@ -113,7 +113,7 @@ Only values approved for the new service may be supplied:
 | NEXT_PUBLIC_FIREBASE_API_KEY=<provided-at-build-time> | Existing public Firebase Web app API key | Required but intentionally not embedded in this runbook; pass from the approved build environment only. It is public web config, not an Admin credential. |
 | NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=neetcompanion-50b1f.firebaseapp.com | Existing public Firebase Auth domain | Exact pinned value; builder rejects any other or empty value. |
 | NEXT_PUBLIC_FIREBASE_PROJECT_ID=neetcompanion-50b1f | Existing public Firebase project | Exact pinned value; builder rejects any other or empty value. |
-| NEXT_PUBLIC_FIREBASE_APP_ID=1:840759107103:web:84391539f65c7aa4abff2a | Existing public Firebase Web app ID | Exact pinned value; builder rejects any other or empty value. |
+| NEXT_PUBLIC_FIREBASE_APP_ID=1:840759107103:web:68dfff0b2e8c209babff2a | Dedicated dashboard Firebase Web app ID | Exact pinned value; builder rejects any other or empty value. |
 
 Use Cloud Run's attached service identity and Secret Manager for any future approved secret. Do not put credentials, service-account JSON, Firebase Admin keys, or client Firestore configuration in the image, .env files, fixtures, or browser bundle.
 
@@ -130,7 +130,7 @@ Local, non-cloud checks:
       --build-arg NEXT_PUBLIC_FIREBASE_API_KEY="${NEXT_PUBLIC_FIREBASE_API_KEY}" \
       --build-arg NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN=neetcompanion-50b1f.firebaseapp.com \
       --build-arg NEXT_PUBLIC_FIREBASE_PROJECT_ID=neetcompanion-50b1f \
-      --build-arg NEXT_PUBLIC_FIREBASE_APP_ID=1:840759107103:web:84391539f65c7aa4abff2a .
+      --build-arg NEXT_PUBLIC_FIREBASE_APP_ID=1:840759107103:web:68dfff0b2e8c209babff2a .
     docker run --rm --publish 8080:8080 --env NODE_ENV=production --env PORT=8080 vijeeta-dashboard:<FULL_GIT_SHA>
 
 The Docker build requires package-registry access for the image builder's frozen install; this is an image-build dependency, not a permission to run cloud commands. If dependencies are unavailable offline, report that as a build prerequisite rather than weakening the lockfile or using an unfrozen install. Export the approved public API key in `NEXT_PUBLIC_FIREBASE_API_KEY` only in the local build environment or CI secret store; never replace the variable reference above with a literal key in source, docs, image labels, or command history.

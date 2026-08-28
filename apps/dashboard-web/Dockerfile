@@ -41,7 +41,7 @@ RUN test "${NEXT_PUBLIC_DASHBOARD_MODE}" = "v3-proxy" \
   && test -n "${NEXT_PUBLIC_FIREBASE_API_KEY}" \
   && test "${NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN}" = "neetcompanion-50b1f.firebaseapp.com" \
   && test "${NEXT_PUBLIC_FIREBASE_PROJECT_ID}" = "neetcompanion-50b1f" \
-  && test "${NEXT_PUBLIC_FIREBASE_APP_ID}" = "1:840759107103:web:84391539f65c7aa4abff2a"
+  && test "${NEXT_PUBLIC_FIREBASE_APP_ID}" = "1:840759107103:web:68dfff0b2e8c209babff2a"
 
 COPY packages/api-contracts packages/api-contracts
 COPY packages/configuration packages/configuration
