@@ -1,6 +1,7 @@
 import type { ProductionAuthSession, ProductionUser } from "./production-api";
 import { getApp, getApps, initializeApp } from "firebase/app";
 import {
+  browserPopupRedirectResolver,
   getAuth,
   GoogleAuthProvider,
   inMemoryPersistence,
@@ -82,7 +83,13 @@ async function loadRuntime(): Promise<FirebaseRuntime> {
   const app = getApps().length ? getApp() : initializeApp(firebaseConfig);
   let auth: FirebaseAuthLike;
   try {
-    auth = initializeAuth(app, { persistence: inMemoryPersistence }) as unknown as FirebaseAuthLike;
+    // initializeAuth, unlike getAuth, installs no popup/redirect resolver, and
+    // signInWithPopup then fails with auth/argument-error. It has to be named
+    // explicitly here.
+    auth = initializeAuth(app, {
+      persistence: inMemoryPersistence,
+      popupRedirectResolver: browserPopupRedirectResolver,
+    }) as unknown as FirebaseAuthLike;
   } catch {
     // A hot-reloaded browser can already have an Auth instance for this app.
     auth = getAuth(app) as unknown as FirebaseAuthLike;

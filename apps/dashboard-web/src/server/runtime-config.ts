@@ -10,6 +10,7 @@ export interface V3RuntimeConfig {
   firestoreDatabaseId: string;
   firebaseProjectId: string;
   releaseGate: boolean;
+  captureInvitationDelivery: boolean;
   adminBootstrap: AdminBootstrapConfig;
 }
 
@@ -54,6 +55,19 @@ export function isReleaseGateMode(env: NodeJS.ProcessEnv | Record<string, string
   return true;
 }
 
+/**
+ * Lets a local operator run against real Firebase while still capturing
+ * invitation email instead of sending it. It refuses to engage on Cloud Run, so
+ * a deployed revision always requires real SMTP.
+ */
+export function capturesInvitationDelivery(env: NodeJS.ProcessEnv | Record<string, string | undefined>): boolean {
+  if (env.VIJEETA_INVITE_DELIVERY !== "capture") return false;
+  if (env.K_SERVICE || env.K_REVISION || env.K_CONFIGURATION) {
+    throw new Error("Captured invitation delivery cannot run on Cloud Run");
+  }
+  return true;
+}
+
 export function loadRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): V3RuntimeConfig {
   const nodeEnv = env.NODE_ENV ?? "development";
   const mode = env.VIJEETA_RUNTIME_MODE === "production" || nodeEnv === "production" ? "production" : nodeEnv === "test" ? "test" : "development";
@@ -92,5 +106,5 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, string
   }
   const timeoutMs = Number(env.VIJEETA_V3_TIMEOUT_MS ?? 5000);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > 15000) throw new Error("V3 timeout must be between 250ms and 15000ms");
-  return { baseUrl, timeoutMs, mode, releaseGate, build: env.VIJEETA_BUILD_ID ?? "unknown", firestoreDatabaseId, firebaseProjectId, adminBootstrap };
+  return { baseUrl, timeoutMs, mode, releaseGate, captureInvitationDelivery: releaseGate || capturesInvitationDelivery(env), build: env.VIJEETA_BUILD_ID ?? "unknown", firestoreDatabaseId, firebaseProjectId, adminBootstrap };
 }

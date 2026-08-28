@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { authEmulatorUrl, createFirebaseAuth, type FirebaseRuntime } from "./firebase-auth";
@@ -70,5 +73,15 @@ describe("auth emulator wiring", () => {
     expect(authEmulatorUrl("auth.example.com:9099")).toBeNull();
     expect(authEmulatorUrl("")).toBeNull();
     expect(authEmulatorUrl(undefined)).toBeNull();
+  });
+});
+
+describe("popup sign-in prerequisites", () => {
+  it("names a popup/redirect resolver when initialising auth", () => {
+    // initializeAuth installs no resolver of its own, and signInWithPopup then
+    // fails with auth/argument-error. This asserts the source keeps passing one.
+    const source = readFileSync(join(process.cwd(), "src/client/firebase-auth.ts"), "utf8");
+    const initialiser = source.slice(source.indexOf("initializeAuth(app"), source.indexOf("} catch"));
+    expect(initialiser).toContain("popupRedirectResolver: browserPopupRedirectResolver");
   });
 });

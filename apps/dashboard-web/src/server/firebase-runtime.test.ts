@@ -138,6 +138,7 @@ describe("Firestore database guard", () => {
       firestoreDatabaseId: "vijeeta-dashboard",
       firebaseProjectId: "neetcompanion-50b1f",
       releaseGate: false,
+      captureInvitationDelivery: false,
       adminBootstrap: { version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] },
     });
 
@@ -164,6 +165,7 @@ describe("Firestore database guard", () => {
       firestoreDatabaseId: "vijeeta-dashboard",
       firebaseProjectId: "neetcompanion-50b1f",
       releaseGate: false,
+      captureInvitationDelivery: false,
       adminBootstrap: { version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] },
     })).rejects.toMatchObject({ status: 503 });
   });
@@ -177,6 +179,7 @@ describe("Firestore database guard", () => {
       firestoreDatabaseId: "vijeeta-dashboard",
       firebaseProjectId: "another-project",
       releaseGate: false,
+      captureInvitationDelivery: false,
       adminBootstrap: { version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] },
     })).rejects.toMatchObject({ status: 503 });
     expect(admin.initializeApp).not.toHaveBeenCalled();

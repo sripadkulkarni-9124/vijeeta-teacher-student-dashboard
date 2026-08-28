@@ -148,3 +148,27 @@ describe("production refuses emulator configuration", () => {
     })).toThrow(/loopback Auth and Firestore emulators/);
   });
 });
+
+describe("captured invitation delivery", () => {
+  const base = {
+    NODE_ENV: "production",
+    VIJEETA_RUNTIME_MODE: "production",
+    VIJEETA_V3_BASE_URL: "https://examprep-api-4q2t5b27aa-el.a.run.app/",
+    VIJEETA_FIRESTORE_DATABASE_ID: "vijeeta-dashboard",
+    VIJEETA_FIREBASE_PROJECT_ID: "neetcompanion-50b1f",
+    VIJEETA_ADMIN_BOOTSTRAP_JSON: JSON.stringify({ version: 1, verifiedEmails: ["admin@example.test"], firebaseUids: [] }),
+  } as Record<string, string | undefined>;
+
+  it("is off unless explicitly requested", () => {
+    expect(loadRuntimeConfig(base).captureInvitationDelivery).toBe(false);
+  });
+
+  it("can be turned on for a local operator", () => {
+    expect(loadRuntimeConfig({ ...base, VIJEETA_INVITE_DELIVERY: "capture" }).captureInvitationDelivery).toBe(true);
+  });
+
+  it("refuses to capture on Cloud Run, so a deployed revision needs real SMTP", () => {
+    expect(() => loadRuntimeConfig({ ...base, VIJEETA_INVITE_DELIVERY: "capture", K_SERVICE: "vijeeta-dashboard" }))
+      .toThrow(/cannot run on Cloud Run/);
+  });
+});

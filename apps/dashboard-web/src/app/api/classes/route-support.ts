@@ -199,7 +199,7 @@ export async function productionInvitationDeliveryDependencies() {
   const config = loadRuntimeConfig();
   const pepper = process.env.VIJEETA_INVITE_TOKEN_PEPPER;
   if (pepper === undefined || pepper.length < 32) throw new Error("Invitation token verification is not configured");
-  if (!config.releaseGate) throw new Error("Invitation email delivery is not configured");
+  if (!config.captureInvitationDelivery) throw new Error("Invitation email delivery is not configured");
   const { CaptureInvitationEmailProvider } = await import("../../../server/email-provider");
   const dashboardUrl = process.env.VIJEETA_PUBLIC_URL ?? "http://127.0.0.1:3010";
   const capture = new CaptureInvitationEmailProvider({ runtimeMode: "development" });
