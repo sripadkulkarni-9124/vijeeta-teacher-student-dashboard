@@ -8,6 +8,8 @@ import { createConnectedApi, ConnectedApiError } from "@/client/connected-api";
 import { createFirebaseAuth } from "@/client/firebase-auth";
 import { AcademicShell } from "@/components/academic-shell";
 import { AdminDashboard } from "@/features/admin/admin-dashboard";
+import { ConnectedStudentDashboard } from "@/features/student/connected-student-dashboard";
+import { ConnectedTeacherDashboard } from "@/features/teacher/connected-teacher-dashboard";
 import {
   createProductionApi,
   ProductionApiError,
@@ -250,7 +252,7 @@ function connectedMessage(error: unknown): string {
   return "The dashboard could not verify your access. Try again.";
 }
 
-/** Functional role gate. Task 10/11 replace these states with the final Academic Precision views. */
+/** Role gate. Every active workspace renders its Academic Precision view. */
 export function ConnectedDashboardNavigation({
   api: suppliedApi,
   requestedRoute = "root",
@@ -427,13 +429,40 @@ export function ConnectedDashboardNavigation({
       <AdminDashboard />
     </AcademicShell>
   );
+  if (resolved.state === "teacher") return (
+    <AcademicShell
+      profile={{ displayName: profile.displayName, email: profile.verifiedEmail, activeRole: "teacher" }}
+      navigation={[
+        { label: "Classes", href: "/teacher#teacher-classes", icon: "⌂" },
+        { label: "Roster", href: "/teacher#teacher-roster", icon: "◎" },
+        { label: "Assignments", href: "/teacher#teacher-assignments", icon: "◇" },
+        { label: "Insights", href: "/teacher#teacher-insights", icon: "▤" },
+      ]}
+      currentHref="/teacher#teacher-classes"
+      workspaceActions={activeRoles.filter((role) => role !== "teacher")}
+      onWorkspaceSwitch={(role) => void switchRole(role)}
+      onSignOut={() => void signOut()}
+    >
+      <ConnectedTeacherDashboard onAuthorizationLost={() => { if (user) void loadProfile(user); }} />
+    </AcademicShell>
+  );
   return (
-    <main>
-      <header><p>Signed in as {profile.verifiedEmail ?? profile.displayName}</p><button type="button" onClick={() => void signOut()}>Log out</button></header>
-      <h1>{resolved.state[0]!.toUpperCase() + resolved.state.slice(1)} workspace</h1>
-      {workspaceNavigation(resolved.state)}
-      <p>Your access was verified from your server profile.</p>
-    </main>
+    <AcademicShell
+      profile={{ displayName: profile.displayName, email: profile.verifiedEmail, activeRole: "student" }}
+      navigation={[
+        { label: "Assigned tests", href: "/student#student-tests", icon: "⌂" },
+        { label: "Results", href: "/student#student-results", icon: "▤" },
+      ]}
+      currentHref="/student#student-tests"
+      workspaceActions={activeRoles.filter((role) => role !== "student")}
+      onWorkspaceSwitch={(role) => void switchRole(role)}
+      onSignOut={() => void signOut()}
+    >
+      <ConnectedStudentDashboard
+        onAuthorizationLost={() => { if (user) void loadProfile(user); }}
+        onLaunch={(runnerPath) => { window.location.assign(runnerPath); }}
+      />
+    </AcademicShell>
   );
 }
 

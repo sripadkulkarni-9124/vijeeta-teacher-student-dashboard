@@ -141,8 +141,8 @@ describe("ProductionDashboard", () => {
     render(<ConnectedDashboardNavigation api={connected} requestedRoute="teacher" />);
 
     expect(await screen.findByRole("heading", { name: /teacher workspace/i })).toBeVisible();
-    expect(screen.queryByRole("button", { name: /admin workspace/i })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /student workspace/i }));
+    expect(screen.queryByRole("button", { name: /switch to admin/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /switch to student/i }));
     expect(screen.getByRole("status")).toHaveTextContent(/checking your dashboard access/i);
     expect(await screen.findByRole("heading", { name: /student workspace/i })).toBeVisible();
     expect(connected.setActiveRole).toHaveBeenCalledWith("student");

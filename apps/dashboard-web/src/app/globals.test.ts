@@ -16,7 +16,7 @@ describe("dashboard responsive contract", () => {
     expect(css).toContain("--card-radius: 16px");
     expect(css).toContain("--sidebar-width: 256px");
     expect(css).toContain("--header-height: 64px");
-    expect(css).toContain('font-family: Inter, "Segoe UI", sans-serif');
+    expect(css).toContain('font-family: "Inter Variable", Inter, "Segoe UI", sans-serif');
   });
 
   it("defines 12, 8, and 4-column layout contracts", () => {
@@ -39,6 +39,11 @@ describe("dashboard responsive contract", () => {
     expect(css).toContain(":focus-visible");
     expect(css).toContain("outline: 3px solid var(--color-primary)");
     expect(css).toContain("animation-duration: 0.01ms !important");
+  });
+
+  it("styles only semantically current Admin subsection links", () => {
+    expect(css).toContain('.admin-section-nav a[aria-current="location"]');
+    expect(css).not.toContain(".admin-section-nav a:first-child");
   });
 
   it("defines distinct teacher and student dashboard layouts", () => {
