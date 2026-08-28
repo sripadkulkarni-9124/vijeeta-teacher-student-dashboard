@@ -193,34 +193,42 @@ gate("connected dashboard release gate", () => {
     expect(response.status).toBe(404);
   });
 
-  it("onboards a Teacher as pending and denies class creation until approved", async () => {
+  it("onboards a Teacher as active, with no approval step", async () => {
     const onboarded = await profileRoutes().POST(request("/api/profile", {
       method: "POST",
       headers: { ...(await bearer(teacher)), "content-type": "application/json" },
       body: JSON.stringify({ role: "teacher" }),
     }));
     expect(onboarded.status).toBe(201);
-    const payload = await body(onboarded) as unknown as { profile: { roles: Record<string, string> } };
-    expect(payload.profile.roles.teacher).toBe("pending");
+    const payload = await body(onboarded) as unknown as { profile: { roles: Record<string, string>; activeRole: string } };
+    expect(payload.profile.roles.teacher).toBe("active");
+    expect(payload.profile.activeRole).toBe("teacher");
+  });
 
+  it("still lets an Admin suspend a Teacher and restore them", async () => {
+    const listed = await adminProfileRoutes().GET(request("/api/admin/profiles", { headers: await bearer(admin) }));
+    expect(listed.status).toBe(200);
+    const adminPrincipal = await runtime.runtime.verifier.verify(`Bearer ${await admin.idToken()}`);
+
+    const suspended = await runtime.runtime.dashboard.suspendTeacher(
+      adminPrincipal, teacher.uid,
+      { now: new Date().toISOString(), correlationId: randomUUID(), reason: "Release gate suspension" },
+    );
+    expect(suspended.roles.teacher).toBe("suspended");
+
+    // A suspended Teacher loses authority immediately.
     const denied = await classRoutes().POST(request("/api/classes", {
       method: "POST",
       headers: { ...(await bearer(teacher)), "content-type": "application/json" },
-      body: JSON.stringify({ name: "Grade 12 Physics" }),
+      body: JSON.stringify({ name: "Denied While Suspended" }),
     }));
     expect(denied.status).toBe(403);
-  });
 
-  it("lets the Admin approve the Teacher", async () => {
-    const listed = await adminProfileRoutes().GET(request("/api/admin/profiles", { headers: await bearer(admin) }));
-    expect(listed.status).toBe(200);
-
-    const approved = await runtime.runtime.dashboard.approveTeacher(
-      await runtime.runtime.verifier.verify(`Bearer ${await admin.idToken()}`),
-      teacher.uid,
-      { now: new Date().toISOString(), correlationId: randomUUID(), reason: "Release gate approval" },
+    const restored = await runtime.runtime.dashboard.approveTeacher(
+      adminPrincipal, teacher.uid,
+      { now: new Date().toISOString(), correlationId: randomUUID(), reason: "Release gate restore" },
     );
-    expect(approved.roles.teacher).toBe("active");
+    expect(restored.roles.teacher).toBe("active");
   });
 
   it("refuses Admin profile listing for a Teacher", async () => {
@@ -339,19 +347,15 @@ gate("connected dashboard release gate", () => {
   });
 
 
-  it("approves a second Teacher who owns no class", async () => {
+  it("onboards a second Teacher who owns no class", async () => {
     const onboarded = await profileRoutes().POST(request("/api/profile", {
       method: "POST",
       headers: { ...(await bearer(rival)), "content-type": "application/json" },
       body: JSON.stringify({ role: "teacher" }),
     }));
     expect(onboarded.status).toBe(201);
-    const approved = await runtime.runtime.dashboard.approveTeacher(
-      await runtime.runtime.verifier.verify(`Bearer ${await admin.idToken()}`),
-      rival.uid,
-      { now: new Date().toISOString(), correlationId: randomUUID(), reason: "Release gate approval" },
-    );
-    expect(approved.roles.teacher).toBe("active");
+    const payload = await body(onboarded) as unknown as { profile: { roles: Record<string, string> } };
+    expect(payload.profile.roles.teacher).toBe("active");
   });
 
   it("adds a second student to the class so the assignment carries two recipients", async () => {
