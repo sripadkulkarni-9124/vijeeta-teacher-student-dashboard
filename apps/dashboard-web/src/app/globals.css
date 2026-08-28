@@ -1510,3 +1510,46 @@ summary:focus-visible {
   color: var(--color-on-surface-variant, #464555);
   grid-column: 2;
 }
+
+/* Inline create/assign forms sit on one row, each field stacking its label. */
+.academic-inline-form {
+  align-items: end;
+  gap: 16px 24px;
+  margin-bottom: 24px;
+}
+
+.academic-inline-form .academic-field {
+  display: grid;
+  gap: 6px;
+  min-width: 260px;
+}
+
+.academic-inline-form .academic-field label {
+  margin: 0;
+}
+
+.academic-inline-form .academic-field input {
+  width: 100%;
+}
+
+.academic-inline-form .academic-button {
+  white-space: nowrap;
+}
+
+.academic-card + .academic-card {
+  margin-top: 24px;
+}
+
+.academic-card__header + .academic-subtitle {
+  margin-top: -8px;
+}
+
+@media (max-width: 767px) {
+  .academic-inline-form {
+    align-items: stretch;
+  }
+
+  .academic-inline-form .academic-field {
+    min-width: 0;
+  }
+}

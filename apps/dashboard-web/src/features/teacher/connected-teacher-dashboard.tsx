@@ -361,19 +361,22 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
           className="academic-inline-form"
           onSubmit={(event: FormEvent) => { event.preventDefault(); void createClass(); }}
         >
-          <label htmlFor="teacher-new-class">New class name</label>
-          <input
-            id="teacher-new-class"
-            maxLength={120}
-            onChange={(event) => setNewClassName(event.target.value)}
-            required
-            value={newClassName}
-          />
+          <div className="academic-field">
+            <label htmlFor="teacher-new-class">New class name</label>
+            <input
+              id="teacher-new-class"
+              maxLength={120}
+              onChange={(event) => setNewClassName(event.target.value)}
+              placeholder="Grade 12 Physics"
+              required
+              value={newClassName}
+            />
+          </div>
           <button className="academic-button academic-button--primary" disabled={busy !== null || newClassName.trim() === ""} type="submit">
             {busy === "create-class" ? "Creating…" : "Create class"}
           </button>
         </form>
-        {loading ? <p role="status">Loading classes…</p> : null}
+        {loading ? <p className="academic-subtitle" role="status">Loading classes…</p> : null}
         {!loading && classes.length === 0 ? <p>No classes yet. Create one to invite students.</p> : null}
         {classes.length > 0 ? (
           <div className="academic-table-wrap"><table>
@@ -483,8 +486,10 @@ export function ConnectedTeacherDashboard({ api = defaultApi(), onAuthorizationL
         </header>
         {selectedClass === null ? <p>Select a class to schedule a test.</p> : (
           <form className="academic-inline-form" onSubmit={(event: FormEvent) => { event.preventDefault(); void assign(); }}>
-            <label htmlFor="teacher-job-id">Test job ID</label>
-            <input id="teacher-job-id" maxLength={128} onChange={(event) => setJobId(event.target.value)} required value={jobId} />
+            <div className="academic-field">
+              <label htmlFor="teacher-job-id">Test job ID</label>
+              <input id="teacher-job-id" maxLength={128} onChange={(event) => setJobId(event.target.value)} placeholder="JOB-1024" required value={jobId} />
+            </div>
             <button className="academic-button academic-button--primary" disabled={busy !== null || jobId.trim() === ""} type="submit">
               {busy === "assign" ? "Scheduling…" : "Assign to class"}
             </button>
