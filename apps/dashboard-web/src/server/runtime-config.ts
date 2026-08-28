@@ -9,10 +9,42 @@ export interface V3RuntimeConfig {
   build: string;
   firestoreDatabaseId: string;
   firebaseProjectId: string;
+  releaseGate: boolean;
   adminBootstrap: AdminBootstrapConfig;
 }
 
 const APPROVED_PRODUCTION_V3_ORIGIN = "https://examprep-api-4q2t5b27aa-el.a.run.app";
+const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "::1", "[::1]"]);
+
+function isLoopbackHost(value: string): boolean {
+  const host = value.includes("://") ? safeHostname(value) : value.split(":")[0];
+  return host !== null && LOOPBACK_HOSTNAMES.has(host);
+}
+
+function safeHostname(value: string): string | null {
+  try { return new URL(value).hostname; } catch { return null; }
+}
+
+/**
+ * The pre-cloud release gate runs the production runtime against loopback Auth
+ * and Firestore emulators. It never relaxes a production rule: the approved V3
+ * origin is still pinned, and the gate reaches V3 through an in-process fake
+ * transport rather than the network. Enabling it requires the explicit opt-in,
+ * the absence of any Cloud Run marker, and loopback emulator hosts.
+ */
+export function isReleaseGateMode(env: NodeJS.ProcessEnv | Record<string, string | undefined>): boolean {
+  if (env.VIJEETA_RELEASE_GATE_MODE !== "loopback") return false;
+  if (env.K_SERVICE || env.K_REVISION || env.K_CONFIGURATION) {
+    throw new Error("The release gate cannot run on Cloud Run");
+  }
+  const auth = env.FIREBASE_AUTH_EMULATOR_HOST;
+  const firestore = env.FIRESTORE_EMULATOR_HOST;
+  if (!auth || !firestore) throw new Error("The release gate requires loopback Auth and Firestore emulators");
+  if (!isLoopbackHost(auth) || !isLoopbackHost(firestore)) {
+    throw new Error("The release gate requires loopback Auth and Firestore emulators");
+  }
+  return true;
+}
 
 export function loadRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, string | undefined> = process.env): V3RuntimeConfig {
   const nodeEnv = env.NODE_ENV ?? "development";
@@ -24,6 +56,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, string
   let baseUrl: URL;
   try { baseUrl = new URL(baseValue); } catch { throw new Error("VIJEETA_V3_BASE_URL must be an absolute URL"); }
   if (baseUrl.username || baseUrl.password || baseUrl.search || baseUrl.hash) throw new Error("V3 base URL must not contain credentials or query state");
+  const releaseGate = isReleaseGateMode(env);
   if (mode === "production") {
     const approved = new URL(APPROVED_PRODUCTION_V3_ORIGIN);
     const hasUnexpectedPath = baseUrl.pathname !== "/";
@@ -45,5 +78,5 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv | Record<string, string
   }
   const timeoutMs = Number(env.VIJEETA_V3_TIMEOUT_MS ?? 5000);
   if (!Number.isInteger(timeoutMs) || timeoutMs < 250 || timeoutMs > 15000) throw new Error("V3 timeout must be between 250ms and 15000ms");
-  return { baseUrl, timeoutMs, mode, build: env.VIJEETA_BUILD_ID ?? "unknown", firestoreDatabaseId, firebaseProjectId, adminBootstrap };
+  return { baseUrl, timeoutMs, mode, releaseGate, build: env.VIJEETA_BUILD_ID ?? "unknown", firestoreDatabaseId, firebaseProjectId, adminBootstrap };
 }

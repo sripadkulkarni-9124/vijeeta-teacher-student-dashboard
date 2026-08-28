@@ -73,3 +73,44 @@ describe("V3 BFF runtime configuration", () => {
     });
   });
 });
+
+describe("release gate mode", () => {
+  const gateEnv = {
+    NODE_ENV: "production",
+    VIJEETA_RUNTIME_MODE: "production",
+    VIJEETA_RELEASE_GATE_MODE: "loopback",
+    FIREBASE_AUTH_EMULATOR_HOST: "127.0.0.1:9099",
+    FIRESTORE_EMULATOR_HOST: "127.0.0.1:8080",
+    VIJEETA_V3_BASE_URL: "https://examprep-api-4q2t5b27aa-el.a.run.app/",
+    VIJEETA_FIRESTORE_DATABASE_ID: "vijeeta-dashboard",
+    VIJEETA_FIREBASE_PROJECT_ID: "neetcompanion-50b1f",
+    VIJEETA_ADMIN_BOOTSTRAP_JSON: JSON.stringify({ version: 1, verifiedEmails: ["gate-admin@example.test"], firebaseUids: [] }),
+  } as Record<string, string | undefined>;
+
+  it("reports the gate without relaxing any production rule", () => {
+    const config = loadRuntimeConfig(gateEnv);
+    expect(config.releaseGate).toBe(true);
+    expect(config.mode).toBe("production");
+    expect(config.baseUrl.origin).toBe("https://examprep-api-4q2t5b27aa-el.a.run.app");
+  });
+
+  it("still pins the approved V3 origin while the gate is on", () => {
+    expect(() => loadRuntimeConfig({ ...gateEnv, VIJEETA_V3_BASE_URL: "http://127.0.0.1:9188/" }))
+      .toThrow(/approved examprep service origin/);
+  });
+
+  it("refuses to run on Cloud Run", () => {
+    expect(() => loadRuntimeConfig({ ...gateEnv, K_SERVICE: "vijeeta-dashboard" })).toThrow(/cannot run on Cloud Run/);
+  });
+
+  it("refuses a non-loopback emulator host", () => {
+    expect(() => loadRuntimeConfig({ ...gateEnv, FIRESTORE_EMULATOR_HOST: "firestore.googleapis.com:443" }))
+      .toThrow(/loopback Auth and Firestore emulators/);
+  });
+
+  it("refuses when an emulator host is missing", () => {
+    expect(() => loadRuntimeConfig({ ...gateEnv, FIREBASE_AUTH_EMULATOR_HOST: undefined }))
+      .toThrow(/loopback Auth and Firestore emulators/);
+  });
+
+});
