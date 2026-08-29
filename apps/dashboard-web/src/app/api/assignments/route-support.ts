@@ -76,5 +76,6 @@ export async function productionAssignmentDependencies() {
     assignments: runtime.store,
     assignmentAdapter: new V3AssignmentAdapter(options),
     insights: new V3InsightAdapter(options),
+    runnerOrigin: config.baseUrl.origin,
   };
 }

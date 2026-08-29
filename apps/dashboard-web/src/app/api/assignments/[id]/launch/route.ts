@@ -5,7 +5,11 @@ import { HttpError, authenticateRequest, jsonResponse, parseRouteId, requireNoQu
 import { productionAssignmentDependencies, type AssignmentRouteDependencies } from "../../route-support";
 
 interface RouteContext { params: Promise<{ id: string }> }
-interface Dependencies extends AssignmentRouteDependencies { assignments: AssignmentRepository }
+interface Dependencies extends AssignmentRouteDependencies {
+  assignments: AssignmentRepository;
+  /** Origin of the approved test service the runner path belongs to. */
+  runnerOrigin: string;
+}
 
 export function createAssignmentLaunchRouteHandler(dependencies: Dependencies) {
   const now = dependencies.now ?? (() => new Date().toISOString());
@@ -23,7 +27,14 @@ export function createAssignmentLaunchRouteHandler(dependencies: Dependencies) {
       || !/^\/t\/[A-Za-z0-9_-]{16,256}$/.test(assignment.runnerPath)) {
       throw new HttpError(409, "assignment_unavailable", "Assignment launch is not available");
     }
-    return jsonResponse(AssignmentLaunchResponseSchema.parse({ runnerPath: assignment.runnerPath }), { correlationId });
+    const runnerUrl = new URL(assignment.runnerPath, dependencies.runnerOrigin);
+    if (runnerUrl.origin !== new URL(dependencies.runnerOrigin).origin) {
+      throw new HttpError(409, "assignment_unavailable", "Assignment launch is not available");
+    }
+    return jsonResponse(AssignmentLaunchResponseSchema.parse({
+      runnerPath: assignment.runnerPath,
+      runnerUrl: runnerUrl.toString(),
+    }), { correlationId });
   }, { createCorrelationId: dependencies.createCorrelationId });
 }
 

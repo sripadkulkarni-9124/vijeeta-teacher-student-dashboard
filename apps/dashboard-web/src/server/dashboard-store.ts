@@ -9,6 +9,7 @@ import type {
   ConnectedDashboardRole,
   CreateClassroomAssignmentRequest,
   CreateClassroomRequest,
+  CreateDirectAssignmentRequest,
   DashboardProfileOnboardRequest,
   DashboardProfileV2,
   PaginationRequest,
@@ -217,6 +218,12 @@ export interface AssignmentRepository {
   prepareAssignment(
     principal: VerifiedPrincipal,
     input: CreateAssignmentInput,
+    context: MutationContext,
+  ): Promise<AssignmentPreparationResult>;
+  /** Creates a test addressed to students by email, with no classroom. */
+  prepareDirectAssignment(
+    principal: VerifiedPrincipal,
+    input: { request: CreateDirectAssignmentRequest; idempotencyKey: string },
     context: MutationContext,
   ): Promise<AssignmentPreparationResult>;
   claimAssignmentShare(principal: VerifiedPrincipal, assignmentId: string, context: MutationContext): Promise<

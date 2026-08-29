@@ -10,7 +10,7 @@ import type {
 import {
   ConnectedStudentDashboard,
   STUDENT_CLIENT_METHODS,
-  isSafeRunnerPath,
+  isSafeRunnerUrl,
   studentFailureCopy,
   type StudentDashboardApi,
 } from "./connected-student-dashboard";
@@ -56,7 +56,7 @@ function api(overrides: Partial<StudentDashboardApi> = {}): StudentDashboardApi 
   return {
     listClasses: vi.fn(async () => classrooms),
     listAssignments: vi.fn(async () => assignments),
-    launchAssignment: vi.fn(async () => ({ runnerPath: "/v3/runner/share-1" })),
+    launchAssignment: vi.fn(async () => ({ runnerPath: "/t/abcdefghijklmnop", runnerUrl: "https://examprep-api-4q2t5b27aa-el.a.run.app/t/abcdefghijklmnop" })),
     getAssignmentInsights: vi.fn(async () => personalInsights),
     ...overrides,
   };
@@ -92,12 +92,12 @@ describe("connected student dashboard", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Start test" }));
 
     await waitFor(() => expect(dependencies.launchAssignment).toHaveBeenCalledWith("assignment-1"));
-    expect(onLaunch).toHaveBeenCalledWith("/v3/runner/share-1");
+    expect(onLaunch).toHaveBeenCalledWith("https://examprep-api-4q2t5b27aa-el.a.run.app/t/abcdefghijklmnop");
   });
 
   it("refuses a launch target that is not a same-origin relative path", async () => {
     const onLaunch = vi.fn();
-    render(<ConnectedStudentDashboard api={api({ launchAssignment: vi.fn(async () => ({ runnerPath: "//evil.example/steal" })) })} onLaunch={onLaunch} />);
+    render(<ConnectedStudentDashboard api={api({ launchAssignment: vi.fn(async () => ({ runnerPath: "/t/abcdefghijklmnop", runnerUrl: "http://evil.example/steal" })) })} onLaunch={onLaunch} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Start test" }));
 
@@ -105,11 +105,13 @@ describe("connected student dashboard", () => {
     expect(onLaunch).not.toHaveBeenCalled();
   });
 
-  it("classifies runner paths", () => {
-    expect(isSafeRunnerPath("/v3/runner/abc")).toBe(true);
-    expect(isSafeRunnerPath("//evil.example")).toBe(false);
-    expect(isSafeRunnerPath("https://evil.example")).toBe(false);
-    expect(isSafeRunnerPath(`/${"a".repeat(600)}`)).toBe(false);
+  it("classifies runner URLs", () => {
+    expect(isSafeRunnerUrl("https://examprep-api-4q2t5b27aa-el.a.run.app/t/abcdefghijklmnop")).toBe(true);
+    // A bare path cannot be resolved by the browser against this origin, which
+    // is exactly what used to send every launch to a dashboard 404.
+    expect(isSafeRunnerUrl("/t/abcdefghijklmnop")).toBe(false);
+    expect(isSafeRunnerUrl("http://examprep-api-4q2t5b27aa-el.a.run.app/t/abc")).toBe(false);
+    expect(isSafeRunnerUrl(`https://example.test/${"a".repeat(1200)}`)).toBe(false);
   });
 
   it("shows the student's own released result", async () => {

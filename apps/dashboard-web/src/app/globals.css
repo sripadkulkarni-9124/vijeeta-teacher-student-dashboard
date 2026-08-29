@@ -1553,3 +1553,33 @@ summary:focus-visible {
     min-width: 0;
   }
 }
+
+.academic-inline-form .academic-field textarea {
+  border: 1px solid var(--color-outline-variant, #c7c4d8);
+  border-radius: 0.5rem;
+  font: inherit;
+  padding: 8px 12px;
+  resize: vertical;
+  width: 100%;
+}
+
+.academic-inline-form .academic-field textarea:focus-visible {
+  border-color: var(--color-primary);
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}
+
+.academic-inline-form .academic-field select {
+  background: var(--vjt-color-surface-raised);
+  border: 1px solid var(--color-outline-variant, #c7c4d8);
+  border-radius: 0.5rem;
+  font: inherit;
+  padding: 8px 12px;
+  width: 100%;
+}
+
+.academic-inline-form .academic-field select:focus-visible {
+  border-color: var(--color-primary);
+  outline: 2px solid var(--color-primary);
+  outline-offset: 1px;
+}

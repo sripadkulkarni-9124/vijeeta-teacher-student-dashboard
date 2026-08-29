@@ -23,6 +23,8 @@ export const TEACHER_CLIENT_METHODS = [
   "redeliverClassroomInvitation",
   "listAssignments",
   "createAssignment",
+  "createDirectAssignment",
+  "listTestJobs",
   "getAssignmentInsights",
   "getStudentAssignmentInsights",
 ] as const;
@@ -187,6 +189,9 @@ export function ConnectedTeacherDashboard({ api: suppliedApi, onAuthorizationLos
   const [inviteOpen, setInviteOpen] = useState(false);
   const [newClassName, setNewClassName] = useState("");
   const [jobId, setJobId] = useState("");
+  const [directJobId, setDirectJobId] = useState("");
+  const [directEmails, setDirectEmails] = useState("");
+  const [testJobs, setTestJobs] = useState<{ id: string; title: string }[] | null>(null);
 
   const selectedClass = useMemo(
     () => classes.find((classroom) => classroom.id === selectedClassId) ?? null,
@@ -244,6 +249,35 @@ export function ConnectedTeacherDashboard({ api: suppliedApi, onAuthorizationLos
   }, [api, report]);
 
   useEffect(() => { void loadClasses(); }, [loadClasses]);
+
+  useEffect(() => {
+    let active = true;
+    void (async () => {
+      try {
+        const page = await api.listTestJobs();
+        if (active) setTestJobs(page.jobs.map((job) => ({ id: job.id, title: job.title })));
+      } catch {
+        // The picker is a convenience. If the test service cannot be reached the
+        // teacher can still type an id, so this failure is not surfaced.
+        if (active) setTestJobs([]);
+      }
+    })();
+    return () => { active = false; };
+  }, [api]);
+
+  const testPicker = (id: string, label: string, value: string, onChange: (next: string) => void) => (
+    <div className="academic-field">
+      <label htmlFor={id}>{label}</label>
+      {testJobs !== null && testJobs.length > 0 ? (
+        <select id={id} onChange={(event) => onChange(event.target.value)} required value={value}>
+          <option value="">Choose a test…</option>
+          {testJobs.map((job) => <option key={job.id} value={job.id}>{job.title}</option>)}
+        </select>
+      ) : (
+        <input id={id} maxLength={128} onChange={(event) => onChange(event.target.value)} placeholder="JOB-1024" required value={value} />
+      )}
+    </div>
+  );
 
   useEffect(() => {
     if (selectedClassId === null) return;
@@ -313,6 +347,26 @@ export function ConnectedTeacherDashboard({ api: suppliedApi, onAuthorizationLos
     setAssignments((current) => [created.assignment, ...current]);
     setJobId("");
     return "Assignment scheduled";
+  });
+
+  /** A test addressed straight to students, with no class involved. */
+  const assignDirect = () => run("assign-direct", async () => {
+    const recipientEmails = directEmails
+      .split(/[\n,;]/)
+      .map((entry) => entry.trim().toLowerCase())
+      .filter((entry) => entry !== "");
+    if (recipientEmails.length === 0) throw new Error("no recipients");
+    const created = await api.createDirectAssignment({
+      jobId: directJobId.trim(),
+      recipientEmails,
+      openAt: new Date().toISOString(),
+      closeAt: null,
+      solutions: "on_submit",
+    }, crypto.randomUUID());
+    setAssignments((current) => [created.assignment, ...current]);
+    setDirectJobId("");
+    setDirectEmails("");
+    return `Test sent to ${recipientEmails.length} student${recipientEmails.length === 1 ? "" : "s"}`;
   });
 
   const archive = () => run("archive", async () => {
@@ -505,15 +559,29 @@ export function ConnectedTeacherDashboard({ api: suppliedApi, onAuthorizationLos
         </header>
         {selectedClass === null ? <p>Select a class to schedule a test.</p> : (
           <form className="academic-inline-form" onSubmit={(event: FormEvent) => { event.preventDefault(); void assign(); }}>
-            <div className="academic-field">
-              <label htmlFor="teacher-job-id">Test job ID</label>
-              <input id="teacher-job-id" maxLength={128} onChange={(event) => setJobId(event.target.value)} placeholder="JOB-1024" required value={jobId} />
-            </div>
+            {testPicker("teacher-job-id", "Test", jobId, setJobId)}
             <button className="academic-button academic-button--primary" disabled={busy !== null || jobId.trim() === ""} type="submit">
               {busy === "assign" ? "Scheduling…" : "Assign to class"}
             </button>
           </form>
         )}
+        <section aria-labelledby="teacher-direct-title" className="academic-card">
+          <header className="academic-card__header">
+            <h3 id="teacher-direct-title">Send a test without a class</h3>
+          </header>
+          <p className="academic-subtitle">Addressed straight to students by email. Each address must already have a Vijeeta student account.</p>
+          <form className="academic-inline-form" onSubmit={(event: FormEvent) => { event.preventDefault(); void assignDirect(); }}>
+            {testPicker("teacher-direct-job", "Test to send", directJobId, setDirectJobId)}
+            <div className="academic-field">
+              <label htmlFor="teacher-direct-emails">Student emails</label>
+              <textarea id="teacher-direct-emails" onChange={(event) => setDirectEmails(event.target.value)} placeholder="one per line, or comma separated" required rows={3} value={directEmails} />
+            </div>
+            <button className="academic-button academic-button--primary" disabled={busy !== null || directJobId.trim() === "" || directEmails.trim() === ""} type="submit">
+              {busy === "assign-direct" ? "Sending…" : "Send test"}
+            </button>
+          </form>
+        </section>
+
         {assignments.length === 0 && selectedClass !== null ? <p>No assignments scheduled for this class.</p> : null}
         {assignments.length > 0 ? (
           <div className="academic-table-wrap"><table>

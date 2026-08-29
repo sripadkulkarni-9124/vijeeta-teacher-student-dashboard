@@ -70,6 +70,11 @@ function api(overrides: Partial<TeacherDashboardApi> = {}): TeacherDashboardApi 
     redeliverClassroomInvitation: vi.fn(async () => ({ invite: { id: "invite-1", classroomId: "class-1", ownerUid: "teacher-1", tokenVersion: 2, expiresAt: now, status: "pending" as const, delivery: "redelivery_requested" as const, acceptedUid: null, acceptedAt: null, createdAt: now, updatedAt: now } })),
     listAssignments: vi.fn(async () => assignments),
     createAssignment: vi.fn(async () => ({ assignment: assignments.assignments[0]! })),
+    createDirectAssignment: vi.fn(async () => ({ assignment: { ...assignments.assignments[0]!, classroomId: null } })),
+    listTestJobs: vi.fn(async () => ({
+      jobs: [{ id: "JOB-9", title: "Kinematics Weekly Test", status: "ready" }],
+      page: 1, page_size: 50, total: 1, pages: 1,
+    })),
     getAssignmentInsights: vi.fn(async () => aggregateInsights),
     getStudentAssignmentInsights: vi.fn(async () => ({
       freshness: now,
@@ -159,7 +164,8 @@ describe("connected teacher dashboard", () => {
     window.location.hash = "#teacher-assignments";
     fireEvent(window, new HashChangeEvent("hashchange"));
 
-    fireEvent.change(await screen.findByLabelText("Test job ID"), { target: { value: "JOB-9" } });
+    // Teachers choose a test by title; the id is an implementation detail.
+    fireEvent.change(await screen.findByLabelText("Test"), { target: { value: "JOB-9" } });
     fireEvent.click(screen.getByRole("button", { name: "Assign to class" }));
 
     await waitFor(() => expect(dependencies.createAssignment).toHaveBeenCalledTimes(1));
@@ -168,6 +174,27 @@ describe("connected teacher dashboard", () => {
     expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
     expect(body.jobId).toBe("JOB-9");
     expect(body.solutions).toBe("on_submit");
+  });
+
+  it("sends a test straight to student emails with no class involved", async () => {
+    const dependencies = api();
+    render(<ConnectedTeacherDashboard api={dependencies} />);
+    await waitFor(() => expect(screen.getByRole("rowheader", { name: "Grade 12 Physics" })).toBeInTheDocument());
+    window.location.hash = "#teacher-assignments";
+    fireEvent(window, new HashChangeEvent("hashchange"));
+
+    fireEvent.change(await screen.findByLabelText("Test to send"), { target: { value: "JOB-9" } });
+    fireEvent.change(screen.getByLabelText("Student emails"), { target: { value: " One@School.edu \n two@school.edu, three@school.edu" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send test" }));
+
+    await waitFor(() => expect(dependencies.createDirectAssignment).toHaveBeenCalledTimes(1));
+    const [body, idempotencyKey] = vi.mocked(dependencies.createDirectAssignment).mock.calls[0]!;
+    // Addresses are normalised and split on newlines, commas, or semicolons.
+    expect(body.recipientEmails).toEqual(["one@school.edu", "two@school.edu", "three@school.edu"]);
+    expect(body.jobId).toBe("JOB-9");
+    expect(idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+    // No classroom is chosen or required for this path.
+    expect(dependencies.createAssignment).not.toHaveBeenCalled();
   });
 
   it("shows aggregate insights and then an authorized individual result", async () => {

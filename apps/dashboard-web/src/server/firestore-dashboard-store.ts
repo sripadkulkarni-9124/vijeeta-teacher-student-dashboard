@@ -10,6 +10,7 @@ import {
   ClassroomSchema,
   CreateClassroomRequestSchema,
   CreateClassroomAssignmentRequestSchema,
+  CreateDirectAssignmentRequestSchema,
   DashboardProfileOnboardRequestSchema,
   DashboardProfileSchema,
   DashboardProfileV2Schema,
@@ -26,6 +27,7 @@ import {
   type ClassroomRosterResponse,
   type ConnectedDashboardRole,
   type CreateClassroomRequest,
+  type CreateDirectAssignmentRequest,
   type DashboardProfileOnboardRequest,
   type DashboardProfileV2,
   type PaginationRequest,
@@ -64,6 +66,7 @@ import {
 const DASHBOARD_DATABASE_ID = "vijeeta-dashboard";
 const MAX_PAGE_SIZE = 100;
 type TeacherRoleState = "pending" | "active" | "suspended";
+const DIRECT_ASSIGNMENT_ROOT = "teacherAssignments";
 // Assignment + idempotency key + audit mirror consume three writes in the same atomic transaction.
 const MAX_ASSIGNMENT_RECIPIENTS = 497;
 
@@ -1095,6 +1098,99 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     return result.value;
   }
 
+  /**
+   * Creates a test addressed to students by email, with no class.
+   *
+   * Every address is resolved through the verified-email index and must belong
+   * to an active Student. An address that cannot be resolved fails the whole
+   * request rather than being dropped, so a teacher is never left believing a
+   * student was included when they were not.
+   */
+  async prepareDirectAssignment(
+    principalCandidate: VerifiedPrincipal,
+    inputCandidate: { request: CreateDirectAssignmentRequest; idempotencyKey: string },
+    context: MutationContext,
+  ): Promise<AssignmentPreparationResult> {
+    const principal = VerifiedPrincipalSchema.parse(principalCandidate);
+    const request = CreateDirectAssignmentRequestSchema.parse(inputCandidate.request);
+    if (request.closeAt !== null && Date.parse(request.closeAt) <= Date.parse(request.openAt)) {
+      throw new DashboardStoreError("Assignment schedule is invalid", "assignment_transition_invalid");
+    }
+    if (request.solutions === "after_close" && request.closeAt === null) {
+      throw new DashboardStoreError("Assignment schedule is invalid", "assignment_transition_invalid");
+    }
+    const addresses = [...new Set(request.recipientEmails)] as string[];
+    if (addresses.length === 0 || addresses.length > MAX_ASSIGNMENT_RECIPIENTS) {
+      throw new DashboardStoreError("Assignment recipients are unavailable", "assignment_recipients_unavailable");
+    }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(inputCandidate.idempotencyKey)) {
+      throw new DashboardStoreError("Assignment idempotency key is invalid", "idempotency_conflict");
+    }
+    const idempotencyKey = inputCandidate.idempotencyKey.toLowerCase();
+    const requestHash = createHash("sha256").update(JSON.stringify({ classroomId: null, request })).digest("hex");
+    const keyReference = this.idempotencyReference(principal.uid, "assignment.create", idempotencyKey);
+
+    const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<AssignmentPreparationResult>> => {
+      const actor = await this.getRequiredProfile(transaction, principal.uid);
+      requireActiveTeacher(actor);
+      if (actor.verifiedEmail !== principal.email) throw new DashboardStoreError("Verified email changed", "verified_email_changed");
+
+      const keySnapshot = await transaction.get(keyReference);
+      if (keySnapshot.exists) {
+        const key = keySnapshot.data();
+        if (!isAssignmentIdempotencyKey(key, principal.uid, idempotencyKey, requestHash, null)) {
+          throw new DashboardStoreError("Idempotency key was reused for another request", "idempotency_conflict");
+        }
+        const replaySnapshot = await transaction.get(this.directAssignmentReference(principal.uid, key.targetId));
+        if (!replaySnapshot.exists) throw new DashboardStoreError("Idempotency target is unavailable", "idempotency_conflict");
+        return { value: { disposition: "idempotent_replay", assignment: assignmentFromSnapshot(replaySnapshot) }, event: null };
+      }
+
+      const recipients: ClassroomAssignment["recipientSnapshot"] = [];
+      for (const email of addresses) {
+        const index = await transaction.get(this.emailIndexReference(email));
+        const indexed = index.data();
+        if (!index.exists || !isValidEmailIndex(indexed, email)) {
+          throw new DashboardStoreError("Assignment recipients are unavailable", "assignment_recipients_unavailable");
+        }
+        const profile = await this.getRequiredProfile(transaction, indexed.firebaseUid);
+        if (profile.roles.student !== "active" || profile.verifiedEmail !== email) {
+          throw new DashboardStoreError("Assignment recipients are unavailable", "assignment_recipients_unavailable");
+        }
+        recipients.push({ uid: indexed.firebaseUid, email });
+      }
+
+      const assignment = ClassroomAssignmentSchema.parse({
+        id: this.randomUuid(), classroomId: null, ownerUid: principal.uid, jobId: request.jobId,
+        recipientSnapshot: recipients, openAt: request.openAt, closeAt: request.closeAt,
+        solutions: request.solutions, state: "creating", testId: null, shareId: null,
+        runnerPath: null, reconciliation: null, createdAt: context.now, updatedAt: context.now,
+      });
+      transaction.create(this.directAssignmentReference(principal.uid, assignment.id), assignment);
+      for (const recipient of recipients) {
+        transaction.create(this.studentAssignmentReference(recipient.uid, assignment.id), {
+          assignmentId: assignment.id,
+          classroomId: null,
+          studentUid: recipient.uid,
+          ownerUid: assignment.ownerUid,
+          createdAt: assignment.createdAt,
+          updatedAt: assignment.updatedAt,
+        });
+      }
+      transaction.create(keyReference, {
+        actorUid: principal.uid, action: "assignment.create", correlationId: context.correlationId, idempotencyKey,
+        requestHash, classroomId: null, targetId: assignment.id, createdAt: context.now,
+      });
+      const event = this.createAuditMirror(transaction, actor, {
+        action: "assignment.created", targetType: "assignment", targetId: assignment.id,
+        context, after: changes("state", "creating"),
+      });
+      return { value: { disposition: "created", assignment }, event };
+    });
+    await this.emit(result.event);
+    return result.value;
+  }
+
   async claimAssignmentShare(
     principalCandidate: VerifiedPrincipal,
     assignmentId: string,
@@ -1106,9 +1202,13 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     const result = await this.firestore.runTransaction(async (transaction): Promise<MutationResult<{ status: "claimed"; operationId: string; assignment: ClassroomAssignment } | { status: "already_claimed"; assignment: ClassroomAssignment }>> => {
       const actor = await this.getRequiredProfile(transaction, principal.uid);
       requireActiveTeacher(actor);
-      const classroomSnapshot = await transaction.get(this.classroomReference(resolved.assignment.classroomId));
-      if (!classroomSnapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
-      requireOwnedActiveClassroom(classroomFromSnapshot(classroomSnapshot), principal.uid);
+      // A direct assignment has no class; ownership of the assignment itself is
+      // asserted below and is the only authority that applies.
+      if (resolved.assignment.classroomId !== null) {
+        const classroomSnapshot = await transaction.get(this.classroomReference(resolved.assignment.classroomId));
+        if (!classroomSnapshot.exists) throw new DashboardStoreError("Classroom does not exist", "classroom_not_found");
+        requireOwnedActiveClassroom(classroomFromSnapshot(classroomSnapshot), principal.uid);
+      }
       const assignmentSnapshot = await transaction.get(resolved.reference);
       if (!assignmentSnapshot.exists) throw new DashboardStoreError("Assignment does not exist", "assignment_not_found");
       const assignment = assignmentFromSnapshot(assignmentSnapshot);
@@ -1341,7 +1441,7 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
       throw new DashboardStoreError("Assignment identity is not unique", "assignment_identity_collision");
     }
     const assignment = assignmentFromSnapshot(snapshot.docs[0]!);
-    return { assignment, reference: this.assignmentReference(assignment.classroomId, assignment.id) };
+    return { assignment, reference: this.referenceForAssignment(assignment) };
   }
 
   private async resolveInvitationById(invitationId: string): Promise<{
@@ -1642,6 +1742,19 @@ export class FirestoreDashboardStore implements ProfileRepository, AdminReposito
     return this.classroomReference(classroomId).collection("assignments").doc(assignmentId);
   }
 
+  private directAssignmentReference(ownerUid: string, assignmentId: string): FirestoreDashboardDocumentReference {
+    assertSafeDocumentId(assignmentId, "Assignment ID");
+    assertSafeDocumentId(ownerUid, "Teacher UID");
+    return this.firestore.collection(DIRECT_ASSIGNMENT_ROOT).doc(ownerUid).collection("assignments").doc(assignmentId);
+  }
+
+  /** Resolves an assignment to its document wherever it physically lives. */
+  private referenceForAssignment(assignment: ClassroomAssignment): FirestoreDashboardDocumentReference {
+    return assignment.classroomId === null
+      ? this.directAssignmentReference(assignment.ownerUid, assignment.id)
+      : this.assignmentReference(assignment.classroomId, assignment.id);
+  }
+
   private studentMembershipReference(studentUid: string, classroomId: string): FirestoreDashboardDocumentReference {
     return this.studentMembershipCollection(studentUid).doc(classroomId);
   }
@@ -1731,15 +1844,22 @@ function invitationFromSnapshot(snapshot: FirestoreDashboardDocumentSnapshot): C
   return invitation;
 }
 
+/**
+ * An assignment lives either under the class that owns it, or, when it was sent
+ * straight to named students, under the teacher who owns it. Both layouts are
+ * checked against the document's own fields so a moved document cannot
+ * impersonate another class or teacher.
+ */
 function assignmentFromSnapshot(snapshot: FirestoreDashboardDocumentSnapshot): ClassroomAssignment {
   const parsed = ClassroomAssignmentSchema.safeParse(snapshot.data());
   const path = snapshot.ref.path.split("/");
-  const physicalClassroomId = path.length === 4 && path[0] === "classrooms" && path[2] === "assignments" ? path[1] : null;
-  if (!parsed.success
-    || snapshot.id !== path[3]
-    || parsed.data.id !== snapshot.id
-    || physicalClassroomId === null
-    || parsed.data.classroomId !== physicalClassroomId) {
+  const shaped = path.length === 4 && path[2] === "assignments" && snapshot.id === path[3];
+  const consistent = parsed.success && shaped && parsed.data.id === snapshot.id && (
+    path[0] === "classrooms"
+      ? parsed.data.classroomId === path[1]
+      : path[0] === DIRECT_ASSIGNMENT_ROOT && parsed.data.classroomId === null && parsed.data.ownerUid === path[1]
+  );
+  if (!consistent || !parsed.success) {
     throw new DashboardStoreError("Assignment physical identity is inconsistent", "assignment_identity_collision");
   }
   return parsed.data;
@@ -2039,7 +2159,7 @@ function isAssignmentIdempotencyKey(
   actorUid: string,
   idempotencyKey: string,
   requestHash: string,
-  classroomId: string,
+  classroomId: string | null,
 ): data is Record<string, unknown> & { targetId: string } {
   if (data === undefined) return false;
   const keys = Object.keys(data).sort();

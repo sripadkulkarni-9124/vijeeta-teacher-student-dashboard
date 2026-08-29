@@ -147,10 +147,15 @@ describe("assignment API orchestration", () => {
 describe("assignment read and reconciliation authority", () => {
   it("allows only the snapshotted active Student to launch the persisted safe runner path", async () => {
     const getAssignmentForStudent = vi.fn(async () => active);
-    const handler = createAssignmentLaunchRouteHandler({ verifier: { verify: vi.fn(async () => studentPrincipal) }, profiles: profileReader(studentProfile), assignments: { getAssignmentForStudent } as unknown as AssignmentRepository, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
+    const handler = createAssignmentLaunchRouteHandler({ runnerOrigin: "https://examprep-api-4q2t5b27aa-el.a.run.app", verifier: { verify: vi.fn(async () => studentPrincipal) }, profiles: profileReader(studentProfile), assignments: { getAssignmentForStudent } as unknown as AssignmentRepository, now: () => NOW, createCorrelationId: () => CORRELATION_ID });
     const response = await handler(request("GET", "http://localhost/api/assignments/assignment-1/launch"), { params: Promise.resolve({ id: "assignment-1" }) });
     expect(response.status).toBe(200);
-    expect(await response.json()).toEqual({ runnerPath: "/t/abcdefghijklmnop" });
+    expect(await response.json()).toEqual({
+      runnerPath: "/t/abcdefghijklmnop",
+      // Absolute, because the path belongs to the test service and the browser
+      // would otherwise resolve it against the dashboard origin.
+      runnerUrl: "https://examprep-api-4q2t5b27aa-el.a.run.app/t/abcdefghijklmnop",
+    });
   });
 
   it("enforces launch window boundaries and denies Teacher/Admin workspaces", async () => {
@@ -161,7 +166,7 @@ describe("assignment read and reconciliation authority", () => {
       [principal, teacherProfile, NOW, 403],
       [principal, { ...teacherProfile, roles: { admin: "active" as const }, activeRole: "admin" as const }, NOW, 403],
     ] as const) {
-      const handler = createAssignmentLaunchRouteHandler({ verifier: { verify: vi.fn(async () => actor) }, profiles: profileReader(actorProfile), assignments: assignmentStore, now: () => instant, createCorrelationId: () => CORRELATION_ID });
+      const handler = createAssignmentLaunchRouteHandler({ runnerOrigin: "https://examprep-api-4q2t5b27aa-el.a.run.app", verifier: { verify: vi.fn(async () => actor) }, profiles: profileReader(actorProfile), assignments: assignmentStore, now: () => instant, createCorrelationId: () => CORRELATION_ID });
       const response = await handler(request("GET", "http://localhost/api/assignments/assignment-1/launch"), { params: Promise.resolve({ id: "assignment-1" }) });
       expect(response.status).toBe(expected);
     }

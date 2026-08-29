@@ -167,7 +167,8 @@ export type AssignmentReconciliation = z.infer<typeof AssignmentReconciliationSc
 
 const AssignmentBase = {
   id: IdentifierSchema,
-  classroomId: IdentifierSchema,
+  /** Null for a test sent straight to named students, with no class involved. */
+  classroomId: IdentifierSchema.nullable(),
   ownerUid: IdentifierSchema,
   jobId: IdentifierSchema,
   recipientSnapshot: z.array(AssignmentRecipientSnapshotSchema).min(1).max(MAX_RECIPIENTS).superRefine((recipients, context) => {
@@ -204,7 +205,7 @@ export const ClassroomAssignmentSchema = z.discriminatedUnion("state", [
 export type ClassroomAssignment = z.infer<typeof ClassroomAssignmentSchema>;
 const AssignmentProjectionBase = {
   id: IdentifierSchema,
-  classroomId: IdentifierSchema,
+  classroomId: IdentifierSchema.nullable(),
   ownerUid: IdentifierSchema,
   jobId: IdentifierSchema,
   recipientCount: z.number().int().positive().max(MAX_RECIPIENTS),
@@ -399,6 +400,23 @@ export type AcceptInvitationRequest = z.infer<typeof AcceptInvitationRequestSche
 export const AcceptInvitationResponseSchema = z.object({ membership: ClassroomMembershipSchema }).strict();
 export type AcceptInvitationResponse = z.infer<typeof AcceptInvitationResponseSchema>;
 
+/**
+ * A test addressed to students by email, with no class. Every address must
+ * already belong to an onboarded Student; the server resolves each one through
+ * the verified-email index and refuses the request if any cannot be resolved,
+ * rather than silently dropping a recipient.
+ */
+export const CreateDirectAssignmentRequestSchema = z.object({
+  jobId: IdentifierSchema,
+  recipientEmails: z.array(
+    z.preprocess((value) => typeof value === "string" ? value.trim().toLowerCase() : value, NormalizedEmailSchema),
+  ).min(1).max(MAX_RECIPIENTS),
+  openAt: IsoTimestampSchema,
+  closeAt: IsoTimestampSchema.nullable(),
+  solutions: AssignmentSolutionsSchema,
+}).strict();
+export type CreateDirectAssignmentRequest = z.infer<typeof CreateDirectAssignmentRequestSchema>;
+
 export const CreateClassroomAssignmentRequestSchema = z.object({
   jobId: IdentifierSchema,
   openAt: IsoTimestampSchema,
@@ -411,7 +429,15 @@ export type ClassroomAssignmentResponse = z.infer<typeof ClassroomAssignmentResp
 export const ClassroomAssignmentListResponseSchema = z.object({ assignments: z.array(ClassroomAssignmentProjectionSchema).max(MAX_PAGE_SIZE), nextCursor: z.string().max(512).nullable() }).strict();
 export type ClassroomAssignmentListResponse = z.infer<typeof ClassroomAssignmentListResponseSchema>;
 
-export const AssignmentLaunchResponseSchema = z.object({ runnerPath: z.string().startsWith("/").max(512) }).strict();
+export const AssignmentLaunchResponseSchema = z.object({
+  runnerPath: z.string().startsWith("/").max(512),
+  /**
+   * The absolute URL to open. runnerPath is a path on the test service, not on
+   * the dashboard, so the browser cannot resolve it on its own. The server
+   * joins it to the approved origin so the client never has to know one.
+   */
+  runnerUrl: z.string().url().max(1024),
+}).strict();
 export type AssignmentLaunchResponse = z.infer<typeof AssignmentLaunchResponseSchema>;
 export const AssignmentAggregateInsightSchema = z.object({
   attempted: z.number().int().nonnegative().max(MAX_RECIPIENTS),

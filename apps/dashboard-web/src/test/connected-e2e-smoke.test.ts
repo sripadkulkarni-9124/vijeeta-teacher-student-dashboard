@@ -151,7 +151,7 @@ gate("connected dashboard release gate", () => {
     assignments: runtime.runtime.dashboard,
     assignmentAdapter: new V3AssignmentAdapter(v3Options()),
   });
-  const launchRoute = () => createAssignmentLaunchRouteHandler({
+  const launchRoute = () => createAssignmentLaunchRouteHandler({ runnerOrigin: "https://examprep-api-4q2t5b27aa-el.a.run.app",
     verifier: runtime.runtime.verifier,
     profiles: runtime.runtime.dashboard,
     assignments: runtime.runtime.dashboard,

@@ -141,7 +141,7 @@ describe("connected same-origin API", () => {
       { invitations: [invite], nextCursor: null }, { invite }, { invite }, { events: [], nextCursor: null },
       { invite }, { invite }, { invite },
       { inviteId: "invite-1", classroomId: "class-1", classroomName: "Physics", teacherDisplayName: "Teacher", targetEmailMatches: true, studentOnboardingRequired: false, expiresAt: NOW, status: "pending" },
-      { membership }, { assignments: [assignment], nextCursor: null }, { assignment }, { runnerPath: "/t/capability" },
+      { membership }, { assignments: [assignment], nextCursor: null }, { assignment }, { runnerPath: "/t/capability", runnerUrl: "https://examprep-api-4q2t5b27aa-el.a.run.app/t/capability" },
       { freshness: NOW, insights: { personal: { attempted: 1, averageScore: 80, score: 80, latestScore: 80 } } },
       { freshness: NOW, insights: { individual: { uid: "uid-1", displayName: "Learner", score: 80, status: "attempted" } } },
       { assignment },

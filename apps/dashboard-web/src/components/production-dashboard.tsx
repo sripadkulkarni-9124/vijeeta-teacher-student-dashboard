@@ -624,7 +624,7 @@ export function ConnectedDashboardNavigation({
     >
       <ConnectedStudentDashboard
         onAuthorizationLost={() => { if (user) void loadProfile(user); }}
-        onLaunch={(runnerPath) => { window.location.assign(runnerPath); }}
+        onLaunch={(runnerUrl) => { window.location.assign(runnerUrl); }}
       />
     </AcademicShell>
   );

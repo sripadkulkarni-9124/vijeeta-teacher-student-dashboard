@@ -69,11 +69,17 @@ function formatScore(value: number | null): string {
 }
 
 /**
- * The launch handoff is server-validated. The browser only follows the returned
- * relative runner path; it never composes a V3 origin of its own.
+ * The launch target is server-validated and returned as an absolute URL on the
+ * approved test service. The browser never composes an origin of its own; it
+ * only checks that what came back is an https URL before following it.
  */
-export function isSafeRunnerPath(runnerPath: string): boolean {
-  return runnerPath.startsWith("/") && !runnerPath.startsWith("//") && runnerPath.length <= 512;
+export function isSafeRunnerUrl(runnerUrl: string): boolean {
+  try {
+    const parsed = new URL(runnerUrl);
+    return parsed.protocol === "https:" && runnerUrl.length <= 1024;
+  } catch {
+    return false;
+  }
 }
 
 export function ConnectedStudentDashboard({ api: suppliedApi, onAuthorizationLost, onLaunch }: {
@@ -153,13 +159,13 @@ export function ConnectedStudentDashboard({ api: suppliedApi, onAuthorizationLos
     setFeedback(null);
     void (async () => {
       try {
-        const { runnerPath } = await api.launchAssignment(assignmentId);
-        if (!isSafeRunnerPath(runnerPath)) {
+        const { runnerUrl } = await api.launchAssignment(assignmentId);
+        if (!isSafeRunnerUrl(runnerUrl)) {
           setFeedback({ tone: "error", message: "The test could not be opened because the launch target was rejected." });
           return;
         }
         setFeedback({ tone: "success", message: "Test ready. Opening the secure runner." });
-        onLaunch?.(runnerPath);
+        onLaunch?.(runnerUrl);
       } catch (error) {
         report(error);
       } finally {
@@ -233,7 +239,7 @@ export function ConnectedStudentDashboard({ api: suppliedApi, onAuthorizationLos
               {assignments.map((assignment) => (
                 <tr key={assignment.id}>
                   <th scope="row">{assignment.jobId}</th>
-                  <td>{classNames.get(assignment.classroomId) ?? "Class"}</td>
+                  <td>{assignment.classroomId === null ? "Sent to you directly" : classNames.get(assignment.classroomId) ?? "Class"}</td>
                   <td><Status value={assignment.state} /></td>
                   <td>{assignment.openAt.slice(0, 10)}</td>
                   <td>

@@ -16,6 +16,8 @@ import {
   InspectInvitationResponseSchema,
   type AdminReasonRequest,
   type CreateClassroomAssignmentRequest,
+  type CreateDirectAssignmentRequest,
+  V3PaperdeskJobsResponseSchema,
   type CreateClassroomRequest,
   type DashboardProfileOnboardRequest,
   type InviteClassroomMemberRequest,
@@ -227,6 +229,9 @@ export function createConnectedApi(options: ConnectedApiOptions) {
     acceptInvitation: (token: string) => execute("/api/invitations/accept", AcceptInvitationResponseSchema, { method: "POST", body: { token } }),
 
     listAssignments: (classId: string, page: Pagination = {}) => execute(query(`/api/classes/${segment(classId)}/assignments`, page), ClassroomAssignmentListResponseSchema),
+    /** The teacher's own tests, so they can pick one by title instead of typing an id. */
+    listTestJobs: (page = 1, pageSize = 50) => execute(`/api/v3/paperdesk/jobs?page=${page}&page_size=${pageSize}`, V3PaperdeskJobsResponseSchema),
+    createDirectAssignment: (body: CreateDirectAssignmentRequest, idempotencyKey: string) => execute("/api/assignments", ClassroomAssignmentResponseSchema, { method: "POST", body, headers: { "idempotency-key": idempotencyKey } }),
     createAssignment: (classId: string, body: CreateClassroomAssignmentRequest, idempotencyKey: string) => execute(`/api/classes/${segment(classId)}/assignments`, ClassroomAssignmentResponseSchema, { method: "POST", body, headers: { "idempotency-key": idempotencyKey } }),
     launchAssignment: (id: string) => execute(`/api/assignments/${segment(id)}/launch`, AssignmentLaunchResponseSchema),
     getAssignmentInsights: (id: string) => execute(`/api/assignments/${segment(id)}/insights`, AssignmentInsightsResponseSchema),
