@@ -34,12 +34,33 @@ beforeEach(() => {
 });
 
 describe("FirebaseIdTokenVerifier", () => {
-  it("verifies only the bearer token and returns the canonical Firebase UID", async () => {
+  it("verifies only the bearer token and projects the canonical UID and policy claims", async () => {
     const verifyIdToken = vi.fn(async () => ({ uid: "canonical-uid", email: "ignored@example.test", role: "forged" }));
     const verifier = new FirebaseIdTokenVerifier({ verifyIdToken });
 
-    await expect(verifier.verify("Bearer signed-token")).resolves.toEqual({ uid: "canonical-uid" });
+    await expect(verifier.verify("Bearer signed-token")).resolves.toEqual({
+      uid: "canonical-uid",
+      email: "ignored@example.test",
+      emailVerified: false,
+      admin: false,
+    });
     expect(verifyIdToken).toHaveBeenCalledWith("signed-token");
+  });
+
+  it("reads the download policy claims only from the verified token", async () => {
+    const verified = new FirebaseIdTokenVerifier({
+      verifyIdToken: async () => ({ uid: "teacher-uid", email: "Meera@Vedantu.com", email_verified: true, admin: "yes" }),
+    });
+
+    await expect(verified.verify("Bearer signed-token")).resolves.toEqual({
+      uid: "teacher-uid",
+      email: "Meera@Vedantu.com",
+      emailVerified: true,
+      admin: false,
+    });
+    await expect(new FirebaseIdTokenVerifier({
+      verifyIdToken: async () => ({ uid: "u", email: 42, email_verified: "true" }),
+    }).verify("Bearer signed-token")).resolves.toEqual({ uid: "u", email: null, emailVerified: false, admin: false });
   });
 
   it("maps invalid tokens and missing canonical UIDs to authentication failures", async () => {

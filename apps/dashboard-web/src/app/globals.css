@@ -102,24 +102,11 @@ dd {
   padding: 16px clamp(18px, 4vw, 52px);
 }
 
-.brand-lockup {
-  align-items: center;
-  display: flex;
-  gap: 12px;
-}
-
-.brand-mark {
-  align-items: center;
-  background: #f0b35f;
-  border-radius: 50%;
-  color: var(--vjt-color-text);
-  display: inline-flex;
-  font-family: "Iowan Old Style", serif;
-  font-size: 22px;
-  font-weight: 700;
-  justify-content: center;
-  min-height: 44px;
-  width: 44px;
+/* The app header sits on the dark surface, so the brand tokens invert there. */
+.app-header .vjt-brand-lockup {
+  --vjt-brand-wordmark: #ffffff;
+  --vjt-brand-support: rgb(255 255 255 / 72%);
+  --vjt-brand-highlight: #f0b35f;
 }
 
 .app-main {

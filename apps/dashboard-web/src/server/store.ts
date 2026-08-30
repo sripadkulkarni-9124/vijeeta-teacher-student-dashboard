@@ -12,6 +12,9 @@ import {
   StudentAttemptSchema,
   StudentDashboardSessionSchema,
   TeacherDashboardSessionSchema,
+  assignmentAccessOf,
+  assignmentRequiresLogin,
+  type AssignmentAccess,
   type AttemptResponse,
   type AssignmentRecipient,
   type DashboardAction,
@@ -29,6 +32,12 @@ import {
   type StudentDashboardSnapshot,
 } from "@vijeeta/api-contracts";
 import { DEMO_RESULT, DEMO_TEST } from "@vijeeta/product-fixtures";
+
+import {
+  assignmentLinkTokenMatches,
+  createAssignmentLinkToken,
+  type AssignmentLinkToken,
+} from "./assignment-link";
 
 export interface MessagingAdapter {
   sendInvite(input: { email: string; classId: string }): Promise<void>;
@@ -75,6 +84,11 @@ export class CaptureTestEngineAdapter implements TestEngineAdapter {
   }
 }
 
+interface InternalAssignmentLink {
+  assignmentId: string;
+  tokenHash: string;
+}
+
 interface InternalTest {
   id: string;
   title: string;
@@ -95,6 +109,8 @@ export interface DashboardState {
   quickTests: QuickTestDraft[];
   tests: InternalTest[];
   assignments: DashboardAssignment[];
+  /** Server-only capability records. Only the token hash is ever persisted. */
+  links: InternalAssignmentLink[];
   attempts: StudentAttempt[];
   results: AttemptResult[];
 }
@@ -104,6 +120,8 @@ export interface DashboardStoreOptions {
   now?: () => string;
   messaging?: MessagingAdapter;
   testEngine?: TestEngineAdapter;
+  createLinkToken?: () => AssignmentLinkToken;
+  currentStudentId?: () => string | null;
 }
 
 const DEFAULT_STATE_PATH = resolve(process.cwd(), ".local/dashboard-state.json");
@@ -176,6 +194,7 @@ function initialState(): DashboardState {
       releasePolicy: "after-test",
     }],
     assignments: [assignment, ...upcomingAssignments],
+    links: [],
     attempts: [{
       id: "attempt-aarav-physics-01",
       assignmentId: assignment.id,
@@ -207,21 +226,39 @@ function slug(value: string): string {
 
 function toRecipientStatus(recipient: AssignmentRecipient, state: DashboardState, assignmentId: string): AssignmentRecipient {
   if (recipient.kind === "email") return { ...recipient };
+  if (recipient.kind === "link") {
+    const attempted = state.attempts.some((attempt) =>
+      attempt.assignmentId === assignmentId
+      && attempt.studentId === recipient.studentId
+      && attempt.status === "submitted");
+    return { ...recipient, status: attempted ? "attempted" : "pending" };
+  }
   const attempted = state.attempts.some((attempt) => attempt.assignmentId === assignmentId && attempt.status === "submitted");
   return { ...recipient, status: attempted ? "attempted" : "pending" };
 }
+
+
 
 export class DashboardStore {
   private readonly filePath: string;
   private readonly now: () => string;
   private readonly messaging: MessagingAdapter;
   private readonly testEngine: TestEngineAdapter;
+  private readonly createLinkToken: () => AssignmentLinkToken;
+  private readonly currentStudentId?: () => string | null;
 
   constructor(options: DashboardStoreOptions = {}) {
     this.filePath = options.filePath ?? DEFAULT_STATE_PATH;
     this.now = options.now ?? (() => new Date().toISOString());
     this.messaging = options.messaging ?? new CaptureMessagingAdapter();
     this.testEngine = options.testEngine ?? new CaptureTestEngineAdapter();
+    this.createLinkToken = options.createLinkToken ?? (() => createAssignmentLinkToken());
+    this.currentStudentId = options.currentStudentId;
+  }
+
+  /** The signed-in learner known to the server. Link redemption never trusts client input. */
+  private signedInStudentId(state: DashboardState): string | null {
+    return (this.currentStudentId ? this.currentStudentId() : state.sessions.student.userId) || null;
   }
 
   async snapshot(role: "teacher"): Promise<TeacherDashboardSnapshot>;
@@ -323,10 +360,26 @@ export class DashboardStore {
           ...action.classIds.map((id) => ({ kind: "class" as const, id, label: state.classes.find((entry) => entry.id === id)?.name ?? id, status: "pending" as const })),
           ...action.directEmails.map((email) => ({ kind: "email" as const, email, status: "pending" as const })),
         ];
-        const assignment: DashboardAssignment = { id: `assignment-${slug(action.title)}-${state.assignments.length + 1}`, testId: action.testId, title: action.title, available: true, recipients, createdAt: this.now() };
+        const access: AssignmentAccess = assignmentAccessOf(action);
+        const assignment: DashboardAssignment = {
+          id: `assignment-${slug(action.title)}-${state.assignments.length + 1}`,
+          testId: action.testId,
+          title: action.title,
+          available: true,
+          access,
+          requireLogin: assignmentRequiresLogin(action),
+          recipients,
+          createdAt: this.now(),
+        };
         state.assignments.push(assignment);
+        if (access !== "link") {
+          await this.save(state);
+          return { type: "assignment-created", assignment };
+        }
+        const { token, tokenHash } = this.createLinkToken();
+        state.links.push({ assignmentId: assignment.id, tokenHash });
         await this.save(state);
-        return { type: "assignment-created", assignment };
+        return { type: "assignment-created", assignment, shareToken: token };
       }
       case "invite-student": {
         if (!state.classes.some((entry) => entry.id === action.classId)) throw new DashboardStoreError("Class not found", "not_found");
@@ -335,6 +388,27 @@ export class DashboardStore {
         await this.save(state);
         await this.messaging.sendInvite({ email: action.email, classId: action.classId });
         return { type: "student-invited", invite };
+      }
+      case "redeem-assignment-link": {
+        const assignment = state.assignments.find((entry) => entry.id === action.assignmentId);
+        if (!assignment) throw new DashboardStoreError("Assignment not found", "not_found");
+        if (assignmentAccessOf(assignment) !== "link") throw new DashboardStoreError("Assignment not found", "not_found");
+        const link = state.links.find((entry) => entry.assignmentId === assignment.id);
+        if (!link || !assignmentLinkTokenMatches(action.token, link.tokenHash)) {
+          throw new DashboardStoreError("Assignment not found", "not_found");
+        }
+        // The redeeming identity comes from the server-side session, never from the request.
+        const identity = this.signedInStudentId(state);
+        if (!identity && assignmentRequiresLogin(assignment)) {
+          throw new DashboardStoreError("Sign in to open this shared test", "conflict");
+        }
+        const studentId = identity
+          ?? `guest-${assignment.id}-${assignment.recipients.filter((recipient) => recipient.kind === "link").length + 1}`;
+        if (!assignment.recipients.some((recipient) => recipient.kind === "link" && recipient.studentId === studentId)) {
+          assignment.recipients.push({ kind: "link", studentId, status: "pending", grantedAt: this.now() });
+          await this.save(state);
+        }
+        return { type: "assignment-link-redeemed", assignment };
       }
       case "start-attempt": {
         const assignment = state.assignments.find((entry) => entry.id === action.assignmentId);
@@ -447,9 +521,19 @@ function parseDashboardState(input: unknown): DashboardState {
     quickTests: parseArray(state.quickTests, parseQuickTestDraft),
     tests: parseArray(state.tests, parseInternalTest),
     assignments: parseArray(state.assignments, (value) => DashboardAssignmentSchema.parse(value)),
+    links: state.links === undefined ? [] : parseArray(state.links, parseAssignmentLink),
     attempts: parseArray(state.attempts, (value) => StudentAttemptSchema.parse(value)),
     results: parseArray(state.results, (value) => AttemptResultSchema.parse(value)),
   };
+}
+
+function parseAssignmentLink(input: unknown): InternalAssignmentLink {
+  const link = asRecord(input, "assignment link");
+  if (typeof link.assignmentId !== "string" || !link.assignmentId) throw new Error("Invalid assignment link identity");
+  if (typeof link.tokenHash !== "string" || !/^[0-9a-f]{64}$/.test(link.tokenHash)) {
+    throw new Error("Invalid assignment link token hash");
+  }
+  return { assignmentId: link.assignmentId, tokenHash: link.tokenHash };
 }
 
 function parseQuickTestDraft(input: unknown): QuickTestDraft {
@@ -526,6 +610,8 @@ function isStudentEligible(
         (entry) => entry.id === recipient.id && entry.roster.some((member) => member.id === studentId),
       );
     }
+    // Link mode never matches on email: only a recorded grant from a redeemed token counts.
+    if (recipient.kind === "link") return recipient.studentId === studentId;
     return Boolean(student?.email && student.email.toLowerCase() === recipient.email.toLowerCase());
   });
 }

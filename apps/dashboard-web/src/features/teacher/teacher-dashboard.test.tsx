@@ -174,13 +174,54 @@ describe("TeacherDashboard", () => {
     fireEvent.click(screen.getByRole("button", { name: "Preview assignment" }));
 
     await waitFor(() => expect(onAssignTest).toHaveBeenCalledWith({
+      access: "email",
       testId: "test-physics",
       classId: "class-11-physics",
       directEmailExceptions: ["late.student@example.test"],
+      requireLogin: true,
     }));
     const preview = await screen.findByRole("status", { name: /assignment state/i });
     expect(preview).toHaveTextContent("Assignment preview ready");
     expect(screen.getByText(/Direct email exceptions: 1/)).toBeVisible();
+  });
+
+  it("shares a test as a link without addressing any student email", async () => {
+    const onAssignTest = vi.fn(async () => ({
+      status: "created" as const,
+      summary: "Share link created",
+    }));
+    render(<TeacherDashboard onAssignTest={onAssignTest} snapshot={snapshot} />);
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Share as a link instead of student emails" }));
+    expect(screen.getByRole("checkbox", { name: "Require sign-in to open the link" })).toBeChecked();
+    fireEvent.click(screen.getByRole("checkbox", { name: "Require sign-in to open the link" }));
+    fireEvent.click(screen.getByRole("button", { name: "Preview assignment" }));
+
+    await waitFor(() => expect(onAssignTest).toHaveBeenCalledWith({
+      access: "link",
+      testId: "test-physics",
+      classId: "class-11-physics",
+      directEmailExceptions: [],
+      requireLogin: false,
+    }));
+    expect(screen.getByText(/Access: Anyone with the link/)).toBeVisible();
+  });
+
+  it("hides the PDF download unless the server allows it", () => {
+    render(<TeacherDashboard snapshot={snapshot} />);
+    expect(screen.queryByRole("button", { name: "Download PDF" })).toBeNull();
+    expect(
+      screen.getByText("PDF download is for Vedantu teachers — you can still share this test as a link."),
+    ).toBeVisible();
+
+    cleanup();
+    const onDownloadPdf = vi.fn();
+    render(<TeacherDashboard canDownloadPdf onDownloadPdf={onDownloadPdf} snapshot={snapshot} />);
+    fireEvent.click(screen.getByRole("button", { name: "Download PDF" }));
+    expect(onDownloadPdf).toHaveBeenCalledWith("test-physics");
+    expect(
+      screen.queryByText("PDF download is for Vedantu teachers — you can still share this test as a link."),
+    ).toBeNull();
   });
 
   it.each([

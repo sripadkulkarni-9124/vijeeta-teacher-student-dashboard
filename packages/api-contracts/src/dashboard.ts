@@ -78,6 +78,21 @@ export const QuickTestDraftSchema = z.object({
 }).strict();
 export type QuickTestDraft = z.infer<typeof QuickTestDraftSchema>;
 
+export const AssignmentAccessSchema = z.enum(["link", "email"]);
+export type AssignmentAccess = z.infer<typeof AssignmentAccessSchema>;
+
+export const DEFAULT_ASSIGNMENT_ACCESS: AssignmentAccess = "email";
+export const DEFAULT_ASSIGNMENT_REQUIRE_LOGIN = true;
+
+/** Assignments persisted before link mode carry no access field and stay email addressed. */
+export function assignmentAccessOf(input: { access?: AssignmentAccess }): AssignmentAccess {
+  return input.access ?? DEFAULT_ASSIGNMENT_ACCESS;
+}
+
+export function assignmentRequiresLogin(input: { requireLogin?: boolean }): boolean {
+  return input.requireLogin ?? DEFAULT_ASSIGNMENT_REQUIRE_LOGIN;
+}
+
 export const AssignmentRecipientSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("class"),
@@ -90,17 +105,30 @@ export const AssignmentRecipientSchema = z.discriminatedUnion("kind", [
     email: z.string().email(),
     status: z.enum(["pending", "attempted"]),
   }).strict(),
+  z.object({
+    kind: z.literal("link"),
+    studentId: z.string().min(1),
+    status: z.enum(["pending", "attempted"]),
+    grantedAt: z.string().datetime({ offset: true }),
+  }).strict(),
 ]);
 export type AssignmentRecipient = z.infer<typeof AssignmentRecipientSchema>;
 
-export const DashboardAssignmentSchema = z.object({
+const DashboardAssignmentFieldsSchema = z.object({
   id: z.string().min(1),
   testId: z.string().min(1),
   title: z.string().min(1),
   available: z.boolean().optional(),
-  recipients: z.array(AssignmentRecipientSchema).min(1),
+  access: AssignmentAccessSchema.optional(),
+  requireLogin: z.boolean().optional(),
+  recipients: z.array(AssignmentRecipientSchema),
   createdAt: z.string().datetime({ offset: true }),
 }).strict();
+
+export const DashboardAssignmentSchema = DashboardAssignmentFieldsSchema.refine(
+  (assignment) => assignmentAccessOf(assignment) === "link" || assignment.recipients.length > 0,
+  { message: "Email-addressed assignments need at least one recipient", path: ["recipients"] },
+);
 export type DashboardAssignment = z.infer<typeof DashboardAssignmentSchema>;
 
 export const AttemptResponseSchema = z.object({
@@ -210,10 +238,12 @@ export const CreateAssignmentActionSchema = z.object({
   title: z.string().trim().min(1),
   classIds: z.array(z.string().min(1)).default([]),
   directEmails: z.array(z.string().email()).default([]),
-}).strict().refine((input) => input.classIds.length > 0 || input.directEmails.length > 0, {
-  message: "At least one class or direct email recipient is required",
-  path: ["classIds"],
-});
+  access: AssignmentAccessSchema.optional(),
+  requireLogin: z.boolean().optional(),
+}).strict().refine(
+  (input) => assignmentAccessOf(input) === "link" || input.classIds.length > 0 || input.directEmails.length > 0,
+  { message: "At least one class or direct email recipient is required", path: ["classIds"] },
+);
 export type CreateAssignmentAction = z.infer<typeof CreateAssignmentActionSchema>;
 
 export const InviteStudentActionSchema = z.object({
@@ -223,6 +253,16 @@ export const InviteStudentActionSchema = z.object({
   classId: z.string().min(1),
 }).strict();
 export type InviteStudentAction = z.infer<typeof InviteStudentActionSchema>;
+
+export const ASSIGNMENT_LINK_TOKEN_PATTERN = /^[A-Za-z0-9_-]{43}$/;
+
+export const RedeemAssignmentLinkActionSchema = z.object({
+  ...ActionBase,
+  type: z.literal("redeem-assignment-link"),
+  assignmentId: z.string().min(1),
+  token: z.string().regex(ASSIGNMENT_LINK_TOKEN_PATTERN),
+}).strict();
+export type RedeemAssignmentLinkAction = z.infer<typeof RedeemAssignmentLinkActionSchema>;
 
 export const StartAttemptActionSchema = z.object({
   ...ActionBase,
@@ -242,6 +282,7 @@ export type SubmitAttemptAction = z.infer<typeof SubmitAttemptActionSchema>;
 export const DashboardActionSchema = z.discriminatedUnion("type", [
   CreateQuickTestActionSchema,
   CreateAssignmentActionSchema,
+  RedeemAssignmentLinkActionSchema,
   InviteStudentActionSchema,
   StartAttemptActionSchema,
   SubmitAttemptActionSchema,
@@ -263,6 +304,12 @@ export const DashboardDispatchResultSchema = z.discriminatedUnion("type", [
   }).strict(),
   z.object({
     type: z.literal("assignment-created"),
+    assignment: DashboardAssignmentSchema,
+    /** Plaintext capability token, returned once at creation and never stored or re-read. */
+    shareToken: z.string().regex(ASSIGNMENT_LINK_TOKEN_PATTERN).optional(),
+  }).strict(),
+  z.object({
+    type: z.literal("assignment-link-redeemed"),
     assignment: DashboardAssignmentSchema,
   }).strict(),
   z.object({

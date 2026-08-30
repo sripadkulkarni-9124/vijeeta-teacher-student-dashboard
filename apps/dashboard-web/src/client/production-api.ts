@@ -21,6 +21,8 @@ export interface ProductionProfile {
   activeRole: ProductionRole | null;
   allowedRoles: ProductionRole[];
   onboardingComplete: boolean;
+  /** Server-derived download policy. Absent or non-boolean responses fail closed. */
+  canDownloadPdf: boolean;
 }
 
 export class ProductionApiError extends Error {
@@ -85,7 +87,7 @@ function parseProfile(value: unknown, fallbackUser: ProductionUser | null = null
   if (activeRole !== null && !allowedRoles.includes(activeRole)) {
     throw new ProductionApiError("Invalid profile role response", "invalid-response");
   }
-  return { user, activeRole, allowedRoles, onboardingComplete };
+  return { user, activeRole, allowedRoles, onboardingComplete, canDownloadPdf: candidate.canDownloadPdf === true };
 }
 
 export function createProductionApi(options: {

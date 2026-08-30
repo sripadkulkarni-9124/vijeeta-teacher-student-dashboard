@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  DashboardProfileResponseSchema,
   DashboardProfileSchema,
   ProfileOnboardRequestSchema,
   projectV3Response,
@@ -52,8 +53,25 @@ describe("V3 dashboard BFF contracts", () => {
       updatedAt: "2026-08-27T00:00:00.000Z",
     });
     expect(profile.firebaseUid).toBe("firebase-1");
+    expect("canDownloadPdf" in profile).toBe(false);
     expect(ProfileOnboardRequestSchema.parse({ role: "student" }).role).toBe("student");
     expect(() => ProfileOnboardRequestSchema.parse({ role: "teacher", firebaseUid: "forged" })).toThrow();
+  });
+
+  it("carries a server-derived PDF download flag only on the profile response projection", () => {
+    const stored = {
+      internalProfileId: "profile-1",
+      firebaseUid: "firebase-1",
+      allowedRoles: ["teacher"],
+      activeRole: "teacher",
+      onboardingCompleted: true,
+      createdAt: "2026-08-27T00:00:00.000Z",
+      updatedAt: "2026-08-27T00:00:00.000Z",
+    };
+
+    expect(DashboardProfileResponseSchema.parse({ ...stored, canDownloadPdf: true }).canDownloadPdf).toBe(true);
+    expect(() => DashboardProfileResponseSchema.parse(stored)).toThrow();
+    expect(() => DashboardProfileSchema.parse({ ...stored, canDownloadPdf: true })).toThrow();
   });
 
   it("projects supported upstream responses and drops unapproved fields", () => {

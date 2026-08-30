@@ -38,6 +38,19 @@ describe("web styles", () => {
     expect(cssText).not.toMatch(/#[0-9a-f]{3,8}/i);
   });
 
+  it("derives the Vedantu brand tokens from the semantic colour scale", () => {
+    const rootBlocks = declarationBlocksFor(":root").join("\n");
+
+    expect(rootBlocks).toContain("--vjt-brand-mark: var(--vjt-color-accent)");
+    expect(rootBlocks).toContain("--vjt-brand-highlight: var(--vjt-color-warning)");
+    expect(rootBlocks).toContain("--vjt-brand-mark-contrast: var(--vjt-color-accent-contrast)");
+    expect(rootBlocks).toContain("--vjt-brand-wordmark: var(--vjt-color-text)");
+    expect(rootBlocks).toContain("--vjt-brand-support: var(--vjt-color-support-text)");
+    expect(declarationBlocksFor(".vjt-brand-lockup__tagline").join("\n")).toMatch(
+      /font-size:\s*var\(--vjt-font-support,\s*12px\)/,
+    );
+  });
+
   it("gives links the same 44px minimum target as other interactive controls", () => {
     expect(declarationBlocksFor(".vjt-link")).toEqual(
       expect.arrayContaining([

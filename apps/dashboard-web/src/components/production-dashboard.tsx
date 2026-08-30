@@ -2,7 +2,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { BrandLockup } from "@vijeeta/design-system";
+
 import { createFirebaseAuth } from "@/client/firebase-auth";
+import { PDF_DOWNLOAD_WITHHELD_MESSAGE } from "@/features/teacher/teacher-dashboard";
 import {
   createProductionApi,
   ProductionApiError,
@@ -65,7 +68,7 @@ function messageFor(error: unknown): string {
   return error instanceof Error ? error.message : "Something went wrong. Please try again.";
 }
 
-function ProductionReadView({ role, api }: { role: ProductionRole; api: ProductionApiLike }) {
+function ProductionReadView({ role, api, canDownloadPdf }: { role: ProductionRole; api: ProductionApiLike; canDownloadPdf: boolean }) {
   const [state, setState] = useState<"loading" | "ready" | "empty" | "error">("loading");
   const [data, setData] = useState<{ discovery?: unknown; tests?: unknown; analysis?: unknown; config?: unknown; jobs?: unknown }>({});
   const [error, setError] = useState<string | null>(null);
@@ -130,6 +133,9 @@ function ProductionReadView({ role, api }: { role: ProductionRole; api: Producti
           <button type="button" disabled>Invite student</button>
           <button type="button" disabled>Create quick test</button>
           <button type="button" disabled>Assign/share test</button>
+          {canDownloadPdf
+            ? <button type="button" disabled>Download PDF</button>
+            : <p>{PDF_DOWNLOAD_WITHHELD_MESSAGE}</p>}
           <span>Preview only</span>
         </div>
       )}
@@ -145,6 +151,7 @@ function SignedOut({ api, onError }: { api: ProductionApiLike; onError: (error: 
   };
   return (
     <section className="production-sign-in">
+      <BrandLockup />
       <h1>Sign in to Vijeeta</h1>
       <p>Use your organization’s Google account to continue.</p>
       <button type="button" onClick={() => void signIn()} disabled={busy}>
@@ -225,11 +232,12 @@ export function ProductionDashboard({ api: suppliedApi }: { api?: ProductionApiL
   return (
     <main className="production-dashboard">
       <header>
+        <BrandLockup size="compact" />
         <p>Signed in as {user.email ?? user.displayName}</p>
         <button type="button" onClick={() => void api.auth.signOut()}>Log out</button>
       </header>
       <h1>{role === "student" ? "Student dashboard" : "Teacher dashboard"}</h1>
-      <ProductionReadView role={role} api={api} />
+      <ProductionReadView api={api} canDownloadPdf={profile.canDownloadPdf} role={role} />
       {error ? <p role="alert">{error}</p> : null}
     </main>
   );

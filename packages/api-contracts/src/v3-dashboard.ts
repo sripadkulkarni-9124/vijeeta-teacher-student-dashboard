@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { DashboardRoleSchema } from "./dashboard";
+import { DashboardRoleSchema, type DashboardRole } from "./dashboard";
 
 export const V3_READ_PATHS = [
   "/v3/shared/mode",
@@ -71,7 +71,7 @@ export function parseV3ReadRoute(rawSegments: readonly string[], query: URLSearc
   return { path, params, query: queryFor(query, allowed, required) };
 }
 
-export const DashboardProfileSchema = z.object({
+const DashboardProfileFieldsSchema = z.object({
   internalProfileId: z.string().min(1),
   firebaseUid: z.string().min(1),
   allowedRoles: z.array(DashboardRoleSchema).min(1),
@@ -79,8 +79,24 @@ export const DashboardProfileSchema = z.object({
   onboardingCompleted: z.boolean(),
   createdAt: z.string().datetime({ offset: true }),
   updatedAt: z.string().datetime({ offset: true }),
-}).strict().refine((profile) => profile.allowedRoles.includes(profile.activeRole), { message: "activeRole must be allowed", path: ["activeRole"] });
+}).strict();
+
+const activeRoleIsAllowed = (profile: { allowedRoles: readonly DashboardRole[]; activeRole: DashboardRole }) =>
+  profile.allowedRoles.includes(profile.activeRole);
+
+export const DashboardProfileSchema = DashboardProfileFieldsSchema.refine(activeRoleIsAllowed, { message: "activeRole must be allowed", path: ["activeRole"] });
 export type DashboardProfile = z.infer<typeof DashboardProfileSchema>;
+
+/**
+ * Profile projection returned to the browser. `canDownloadPdf` is derived on the
+ * server from the verified Firebase token and is never persisted or accepted from
+ * a client.
+ */
+export const DashboardProfileResponseSchema = DashboardProfileFieldsSchema
+  .extend({ canDownloadPdf: z.boolean() })
+  .strict()
+  .refine(activeRoleIsAllowed, { message: "activeRole must be allowed", path: ["activeRole"] });
+export type DashboardProfileResponse = z.infer<typeof DashboardProfileResponseSchema>;
 
 export const ProfileOnboardRequestSchema = z.object({ role: DashboardRoleSchema }).strict();
 export type ProfileOnboardRequest = z.infer<typeof ProfileOnboardRequestSchema>;

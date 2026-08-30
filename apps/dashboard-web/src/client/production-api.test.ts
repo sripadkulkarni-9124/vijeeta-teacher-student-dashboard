@@ -58,6 +58,29 @@ describe("production API client", () => {
     });
   });
 
+  it("reads the PDF download policy from the server response and fails closed", async () => {
+    const auth = authSession();
+    const body = (extra: Record<string, unknown>) => new Response(
+      JSON.stringify({
+        activeRole: "teacher",
+        allowedRoles: ["teacher"],
+        onboardingComplete: true,
+        user: auth.currentUser,
+        ...extra,
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+    const transport = vi.fn()
+      .mockResolvedValueOnce(body({ canDownloadPdf: true }))
+      .mockResolvedValueOnce(body({}))
+      .mockResolvedValueOnce(body({ canDownloadPdf: "true" }));
+    const api = createProductionApi({ auth, transport });
+
+    await expect(api.getProfile()).resolves.toMatchObject({ canDownloadPdf: true });
+    await expect(api.getProfile()).resolves.toMatchObject({ canDownloadPdf: false });
+    await expect(api.getProfile()).resolves.toMatchObject({ canDownloadPdf: false });
+  });
+
   it("loads profile and posts a server-authoritative onboarding role", async () => {
     const auth = authSession();
     const transport = vi

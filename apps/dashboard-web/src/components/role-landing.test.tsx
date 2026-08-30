@@ -4,13 +4,15 @@ import { describe, expect, it, vi } from "vitest";
 import { RoleLanding } from "./role-landing";
 
 describe("RoleLanding", () => {
-  it("offers one simulated sign-in entry for each dashboard role", () => {
+  it("asks the single sign-up question and keeps the role selection contract", () => {
     const onSelectRole = vi.fn();
     render(<RoleLanding onSelectRole={onSelectRole} />);
 
     expect(
-      screen.getByRole("heading", { name: "Choose your demo workspace" }),
+      screen.getByRole("heading", { name: "Are you a teacher or a student?" }),
     ).toBeVisible();
+    expect(screen.getByText("ViJEEta")).toBeVisible();
+    expect(screen.getByText("by Vedantu")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Continue as teacher" }));
     fireEvent.click(screen.getByRole("button", { name: "Continue as student" }));
 

@@ -34,10 +34,18 @@ export class InMemoryProfileStore implements ProfileStore {
   }
 }
 
-export interface TokenVerifier { verify(authorization: string): Promise<{ uid: string }>; }
+/** Claims read from a verified Firebase ID token. Never populated from client input. */
+export interface VerifiedToken {
+  uid: string;
+  email?: string | null;
+  emailVerified?: boolean;
+  admin?: boolean;
+}
+
+export interface TokenVerifier { verify(authorization: string): Promise<VerifiedToken>; }
 
 export class UnavailableTokenVerifier implements TokenVerifier {
-  async verify(): Promise<{ uid: string }> { throw new TokenVerificationError("Firebase token verifier is not configured", 503); }
+  async verify(): Promise<VerifiedToken> { throw new TokenVerificationError("Firebase token verifier is not configured", 503); }
 }
 
 export function bearerToken(authorization: string | null): string {

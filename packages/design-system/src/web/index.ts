@@ -6,6 +6,7 @@ export {
   type IconButtonProps,
   type LinkProps,
 } from "./button";
+export { BrandLockup, type BrandLockupProps } from "./brand-lockup";
 export { Checkbox, Radio, Switch } from "./choice-controls";
 export {
   Card,

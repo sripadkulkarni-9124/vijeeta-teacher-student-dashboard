@@ -1,7 +1,7 @@
 "use client";
 
 import type { DashboardSnapshot } from "@vijeeta/api-contracts";
-import { Alert, Button } from "@vijeeta/design-system";
+import { Alert, BrandLockup, Button } from "@vijeeta/design-system";
 import { useEffect, useRef, useState } from "react";
 
 import { demoApi, type DemoApi } from "@/client/demo-api";
@@ -66,13 +66,7 @@ export function DashboardPrototype({ api = demoApi }: { api?: DemoApi }) {
         Skip to dashboard
       </a>
       <header className="app-header">
-        <div className="brand-lockup">
-          <span aria-hidden="true" className="brand-mark">V</span>
-          <div>
-            <strong>Vijeeta</strong>
-            <div className="api-status">Local end-to-end prototype</div>
-          </div>
-        </div>
+        <BrandLockup size="compact" />
         {role ? (
           <div>
             <span className="role-pill">
@@ -133,15 +127,22 @@ export function DashboardPrototype({ api = demoApi }: { api?: DemoApi }) {
                   }}
                   onAssignTest={async (input) => {
                     const test = snapshot.quickTests.find((entry) => entry.id === input.testId);
-                    await api.mutate({
+                    const created = await api.mutate({
                       type: "create-assignment",
                       testId: input.testId,
                       title: test ? `${test.topic} quick test` : "Class test",
-                      classIds: [input.classId],
-                      directEmails: [...input.directEmailExceptions],
+                      classIds: input.access === "link" ? [] : [input.classId],
+                      directEmails: input.access === "link" ? [] : [...input.directEmailExceptions],
+                      access: input.access,
+                      requireLogin: input.requireLogin,
                     });
                     await refresh("teacher");
-                    return { status: "created", summary: "Assignment saved locally" };
+                    return {
+                      status: "created",
+                      summary: created.type === "assignment-created" && created.shareToken
+                        ? "Share link created. Copy it from the assignment before you leave this page."
+                        : "Assignment saved locally",
+                    };
                   }}
                 />
               </>

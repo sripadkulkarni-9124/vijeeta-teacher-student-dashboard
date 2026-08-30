@@ -57,6 +57,51 @@ describe("profile routes", () => {
     expect(read.status).toBe(200);
   });
 
+  it("derives the PDF download flag from the verified token and ignores client claims", async () => {
+    const profiles = new InMemoryProfileStore();
+    configureProfileForTests({
+      profiles,
+      verifier: { verify: async () => ({ uid: "vedantu-uid", email: "meera@vedantu.com", emailVerified: true, admin: false }) },
+      teacherEligibility: { verify: async () => true },
+    });
+
+    const created = await POST(new Request("http://localhost/api/profile", {
+      method: "POST",
+      headers: { authorization: "Bearer real", "content-type": "application/json" },
+      body: JSON.stringify({ role: "teacher" }),
+    }));
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual(expect.objectContaining({ firebaseUid: "vedantu-uid", canDownloadPdf: true }));
+
+    const read = await GET(new Request("http://localhost/api/profile", { headers: { authorization: "Bearer real" } }));
+    expect(await read.json()).toEqual(expect.objectContaining({ canDownloadPdf: true }));
+
+    const forged = await POST(new Request("http://localhost/api/profile", {
+      method: "POST",
+      headers: { authorization: "Bearer real", "content-type": "application/json" },
+      body: JSON.stringify({ role: "teacher", canDownloadPdf: true }),
+    }));
+    expect(forged.status).toBe(400);
+  });
+
+  it("withholds PDF download from outside teachers and unverified addresses", async () => {
+    for (const verified of [
+      { uid: "outside-uid", email: "coach@example.test", emailVerified: true },
+      { uid: "unverified-uid", email: "meera@vedantu.com", emailVerified: false },
+      { uid: "claimless-uid" },
+    ]) {
+      const profiles = new InMemoryProfileStore();
+      configureProfileForTests({ profiles, verifier: { verify: async () => verified }, teacherEligibility: { verify: async () => true } });
+      const created = await POST(new Request("http://localhost/api/profile", {
+        method: "POST",
+        headers: { authorization: "Bearer real", "content-type": "application/json" },
+        body: JSON.stringify({ role: "student" }),
+      }));
+      expect(await created.json()).toEqual(expect.objectContaining({ canDownloadPdf: false }));
+      resetProfileForTests();
+    }
+  });
+
   it("requires authoritative PaperDesk eligibility before teacher onboarding", async () => {
     const profiles = new InMemoryProfileStore();
     const checked: string[] = [];

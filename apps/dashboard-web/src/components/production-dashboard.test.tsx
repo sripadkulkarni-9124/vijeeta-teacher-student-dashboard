@@ -11,6 +11,7 @@ const profile: ProductionProfile = {
   activeRole: null,
   allowedRoles: ["student", "teacher"],
   onboardingComplete: false,
+  canDownloadPdf: false,
   user: { uid: "uid-1", email: "aarav@example.test", displayName: "Aarav Kulkarni" },
 };
 
@@ -86,6 +87,38 @@ describe("ProductionDashboard", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/not authorized/i);
     expect(productionApi.readTeacher).not.toHaveBeenCalled();
+  });
+
+  it("shows the PDF download to a teacher only when the server profile allows it", async () => {
+    window.history.replaceState({}, "", "/dashboard/teacher");
+    const teacherProfile = (canDownloadPdf: boolean): ProductionProfile => ({
+      ...profile,
+      activeRole: "teacher",
+      allowedRoles: ["teacher"],
+      onboardingComplete: true,
+      canDownloadPdf,
+    });
+
+    const withoutDownload = api();
+    withoutDownload.getProfile = vi.fn(async () => teacherProfile(false));
+    const { unmount } = render(<ProductionDashboard api={withoutDownload} />);
+
+    expect(await screen.findByRole("heading", { name: /teacher dashboard/i })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Download PDF" })).toBeNull();
+    expect(
+      screen.getByText("PDF download is for Vedantu teachers — you can still share this test as a link."),
+    ).toBeVisible();
+
+    unmount();
+    document.body.replaceChildren();
+    const withDownload = api();
+    withDownload.getProfile = vi.fn(async () => teacherProfile(true));
+    render(<ProductionDashboard api={withDownload} />);
+
+    expect(await screen.findByRole("button", { name: "Download PDF" })).toBeVisible();
+    expect(
+      screen.queryByText("PDF download is for Vedantu teachers — you can still share this test as a link."),
+    ).toBeNull();
   });
 
   it("shows unauthorized-domain and logout feedback", async () => {

@@ -1,5 +1,6 @@
-import { DashboardRoleSchema, ProfileOnboardRequestSchema, type V3Problem } from "@vijeeta/api-contracts";
-import { bearerToken, ProfileStoreError, TokenVerificationError, type ProfileStore, type TokenVerifier } from "../../../server/profile-store";
+import { DashboardProfileResponseSchema, DashboardRoleSchema, ProfileOnboardRequestSchema, type DashboardProfile, type V3Problem } from "@vijeeta/api-contracts";
+import { bearerToken, ProfileStoreError, TokenVerificationError, type ProfileStore, type TokenVerifier, type VerifiedToken } from "../../../server/profile-store";
+import { canDownloadPdf } from "../../../server/pdf-policy";
 import { getProductionFirebaseRuntime } from "../../../server/firebase-runtime";
 import { loadRuntimeConfig } from "../../../server/runtime-config";
 import { V3ReadAdapter } from "../../../server/v3-read-adapter";
@@ -37,25 +38,33 @@ function validation(error: unknown) {
   return response({ code: "invalid_request", message: "Request validation failed", ...(issues ? { issues } : {}) }, 400);
 }
 
-async function verifiedUid(request: Request, verifier: TokenVerifier): Promise<string> {
+async function verifiedToken(request: Request, verifier: TokenVerifier): Promise<VerifiedToken> {
   const header = bearerToken(request.headers.get("authorization"));
   const verified = await verifier.verify(header);
   if (!verified.uid) throw new Error("Verifier returned no UID");
-  return verified.uid;
+  return verified;
+}
+
+/** Projects the stored profile plus the server-derived download policy. */
+function profileResponse(profile: DashboardProfile, verified: VerifiedToken, status = 200): Response {
+  return Response.json(
+    DashboardProfileResponseSchema.parse({ ...profile, canDownloadPdf: canDownloadPdf(verified) }),
+    { status, headers: { "cache-control": "no-store" } },
+  );
 }
 
 export async function GET(request: Request): Promise<Response> {
   try { bearerToken(request.headers.get("authorization")); } catch { return unauthorized(); }
   const deps = await dependencies();
   if (!deps) return response({ code: "upstream_unavailable", message: "Profile service unavailable" }, 503);
-  let uid: string;
-  try { uid = await verifiedUid(request, deps.verifier); } catch (error) {
+  let verified: VerifiedToken;
+  try { verified = await verifiedToken(request, deps.verifier); } catch (error) {
     if (error instanceof TokenVerificationError && error.status === 503) return response({ code: "upstream_unavailable", message: "Profile service unavailable" }, 503);
     return unauthorized();
   }
   try {
-    const profile = await deps.profiles.getByFirebaseUid(uid);
-    return profile ? Response.json(profile, { headers: { "cache-control": "no-store" } }) : response({ code: "not_found", message: "Profile onboarding required" }, 404);
+    const profile = await deps.profiles.getByFirebaseUid(verified.uid);
+    return profile ? profileResponse(profile, verified) : response({ code: "not_found", message: "Profile onboarding required" }, 404);
   } catch { return response({ code: "upstream_unavailable", message: "Profile service unavailable" }, 503); }
 }
 
@@ -63,8 +72,8 @@ export async function POST(request: Request): Promise<Response> {
   try { bearerToken(request.headers.get("authorization")); } catch { return unauthorized(); }
   const deps = await dependencies();
   if (!deps) return response({ code: "upstream_unavailable", message: "Profile service unavailable" }, 503);
-  let uid: string;
-  try { uid = await verifiedUid(request, deps.verifier); } catch (error) {
+  let verified: VerifiedToken;
+  try { verified = await verifiedToken(request, deps.verifier); } catch (error) {
     if (error instanceof TokenVerificationError && error.status === 503) return response({ code: "upstream_unavailable", message: "Profile service unavailable" }, 503);
     return unauthorized();
   }
@@ -78,8 +87,8 @@ export async function POST(request: Request): Promise<Response> {
     if (!eligible) return response({ code: "forbidden", message: "Teacher onboarding requires authoritative access" }, 403);
   }
   try {
-    const profile = await deps.profiles.onboard(uid, DashboardRoleSchema.parse(body.role));
-    return Response.json(profile, { status: 201, headers: { "cache-control": "no-store" } });
+    const profile = await deps.profiles.onboard(verified.uid, DashboardRoleSchema.parse(body.role));
+    return profileResponse(profile, verified, 201);
   } catch (error) {
     if (error instanceof ProfileStoreError) return response({ code: "forbidden", message: error.message }, 409);
     return response({ code: "upstream_unavailable", message: "Profile service unavailable" }, 503);

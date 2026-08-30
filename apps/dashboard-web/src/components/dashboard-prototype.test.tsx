@@ -69,7 +69,7 @@ describe("DashboardPrototype", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Switch role" }));
     expect(
-      screen.getByRole("heading", { name: "Choose your demo workspace" }),
+      screen.getByRole("heading", { name: "Are you a teacher or a student?" }),
     ).toBeVisible();
   });
 

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, type FormEvent } from "react";
+import type { AssignmentAccess } from "@vijeeta/api-contracts";
 import {
   Alert,
   Badge,
@@ -100,6 +101,9 @@ export interface TeacherAssignmentInput {
   testId: string;
   classId: string;
   directEmailExceptions: readonly string[];
+  /** "link" shares a capability link; "email" keeps the existing addressed behaviour. */
+  access: AssignmentAccess;
+  requireLogin: boolean;
 }
 
 export interface TeacherActionResult {
@@ -107,8 +111,14 @@ export interface TeacherActionResult {
   summary: string;
 }
 
+export const PDF_DOWNLOAD_WITHHELD_MESSAGE =
+  "PDF download is for Vedantu teachers — you can still share this test as a link.";
+
 export interface TeacherDashboardProps {
   snapshot: TeacherDashboardSnapshot;
+  /** Server-derived from the verified token. Absent means no download. */
+  canDownloadPdf?: boolean;
+  onDownloadPdf?: (testId: string) => void;
   onCreateInvitation?: (
     input: TeacherInvitationInput,
   ) => Promise<TeacherActionResult>;
@@ -119,9 +129,11 @@ export interface TeacherDashboardProps {
 }
 
 export function TeacherDashboard({
+  canDownloadPdf = false,
   onAssignTest,
   onCreateInvitation,
   onCreateQuickTestDraft,
+  onDownloadPdf,
   snapshot,
 }: TeacherDashboardProps) {
   if (snapshot.scenario === "loading") {
@@ -172,11 +184,13 @@ export function TeacherDashboard({
           <ClassRoster classes={snapshot.classes} />
           <TeacherRoster roster={snapshot.roster} />
           <TeacherTools
+            canDownloadPdf={canDownloadPdf}
             classes={snapshot.classes}
             invitations={snapshot.invitations}
             onCreateInvitation={onCreateInvitation}
             onCreateQuickTestDraft={onCreateQuickTestDraft}
             onAssignTest={onAssignTest}
+            onDownloadPdf={onDownloadPdf}
             tests={snapshot.tests}
           />
         </div>
@@ -248,18 +262,22 @@ function TeacherRoster({ roster }: { roster: readonly TeacherRosterEntry[] }) {
 }
 
 function TeacherTools({
+  canDownloadPdf,
   classes,
   invitations,
   onAssignTest,
   onCreateInvitation,
   onCreateQuickTestDraft,
+  onDownloadPdf,
   tests,
 }: {
+  canDownloadPdf: boolean;
   classes: readonly TeacherClass[];
   invitations: readonly TeacherInvitation[];
   onAssignTest?: TeacherDashboardProps["onAssignTest"];
   onCreateInvitation?: TeacherDashboardProps["onCreateInvitation"];
   onCreateQuickTestDraft?: TeacherDashboardProps["onCreateQuickTestDraft"];
+  onDownloadPdf?: TeacherDashboardProps["onDownloadPdf"];
   tests: readonly TeacherTestSummary[];
 }) {
   return (
@@ -270,8 +288,10 @@ function TeacherTools({
       />
       <QuickTestForm onCreateQuickTestDraft={onCreateQuickTestDraft} />
       <AssignmentPreview
+        canDownloadPdf={canDownloadPdf}
         classes={classes}
         onAssignTest={onAssignTest}
+        onDownloadPdf={onDownloadPdf}
         tests={tests}
       />
     </div>
@@ -476,18 +496,24 @@ function QuickTestForm({
 }
 
 function AssignmentPreview({
+  canDownloadPdf,
   classes,
   onAssignTest,
+  onDownloadPdf,
   tests,
 }: {
+  canDownloadPdf: boolean;
   classes: readonly TeacherClass[];
   onAssignTest?: TeacherDashboardProps["onAssignTest"];
+  onDownloadPdf?: TeacherDashboardProps["onDownloadPdf"];
   tests: readonly TeacherTestSummary[];
 }) {
   const firstTest = tests[0];
   const [testId, setTestId] = useState(firstTest?.id ?? "");
   const [classId, setClassId] = useState(classes[0]?.id ?? "");
   const [exceptions, setExceptions] = useState("");
+  const [shareByLink, setShareByLink] = useState(false);
+  const [requireLogin, setRequireLogin] = useState(true);
   const [state, setState] = useState<TeacherActionResult | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -500,7 +526,13 @@ function AssignmentPreview({
     setSubmitting(true);
     try {
       const result = onAssignTest
-        ? await onAssignTest({ classId, directEmailExceptions, testId })
+        ? await onAssignTest({
+            access: shareByLink ? "link" : "email",
+            classId,
+            directEmailExceptions,
+            requireLogin,
+            testId,
+          })
         : { status: "preview" as const, summary: "Assignment preview ready" };
       setState(result);
     } catch {
@@ -547,6 +579,18 @@ function AssignmentPreview({
               />
             )}
           </Field>
+          <Checkbox
+            checked={shareByLink}
+            label="Share as a link instead of student emails"
+            onChange={(event) => setShareByLink(event.target.checked)}
+          />
+          {shareByLink ? (
+            <Checkbox
+              checked={requireLogin}
+              label="Require sign-in to open the link"
+              onChange={(event) => setRequireLogin(event.target.checked)}
+            />
+          ) : null}
           <div className="teacher-assignment-summary">
             <p>
               <strong>Assignment preview</strong>
@@ -554,11 +598,27 @@ function AssignmentPreview({
             <p>Class: {selectedClass?.name ?? "Choose a class"}</p>
             <p>Test: {selectedTest?.title ?? "Choose a test"}</p>
             <p>Direct email exceptions: {countEmails(exceptions)}</p>
+            <p>
+              Access: {shareByLink
+                ? `Anyone with the link${requireLogin ? " who is signed in" : ""}`
+                : "Only the addressed learners"}
+            </p>
           </div>
           <Button loading={submitting} loadingLabel="Preparing assignment" type="submit">
             Preview assignment
           </Button>
         </form>
+      )}
+      {canDownloadPdf ? (
+        <Button
+          className="teacher-download-pdf"
+          onClick={() => onDownloadPdf?.(testId)}
+          variant="secondary"
+        >
+          Download PDF
+        </Button>
+      ) : (
+        <p className="teacher-help">{PDF_DOWNLOAD_WITHHELD_MESSAGE}</p>
       )}
       {state ? (
         <Alert title="Assignment state" tone={state.status === "error" ? "danger" : "success"}>

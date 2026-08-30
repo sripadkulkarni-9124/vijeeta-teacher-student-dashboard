@@ -8,6 +8,7 @@ import {
   bearerToken,
   type ProfileStore,
   type TokenVerifier,
+  type VerifiedToken,
 } from "./profile-store";
 import { loadRuntimeConfig, type V3RuntimeConfig } from "./runtime-config";
 
@@ -15,18 +16,28 @@ const FIREBASE_APP_NAME = "vijeeta-dashboard-server";
 const DASHBOARD_DATABASE_ID = "vijeeta-dashboard";
 
 interface FirebaseAuthLike {
-  verifyIdToken(token: string): Promise<{ uid?: string }>;
+  verifyIdToken(token: string): Promise<{
+    uid?: string;
+    email?: unknown;
+    email_verified?: unknown;
+    admin?: unknown;
+  }>;
 }
 
 export class FirebaseIdTokenVerifier implements TokenVerifier {
   constructor(private readonly auth: FirebaseAuthLike) {}
 
-  async verify(authorization: string): Promise<{ uid: string }> {
+  async verify(authorization: string): Promise<VerifiedToken> {
     try {
       const header = bearerToken(authorization);
       const decoded = await this.auth.verifyIdToken(header.slice("Bearer ".length));
       if (typeof decoded.uid !== "string" || !decoded.uid.trim()) throw new Error("Verified token has no UID");
-      return { uid: decoded.uid };
+      return {
+        uid: decoded.uid,
+        email: typeof decoded.email === "string" ? decoded.email : null,
+        emailVerified: decoded.email_verified === true,
+        admin: decoded.admin === true,
+      };
     } catch (error) {
       if (isFirebaseDependencyFailure(error)) {
         throw new TokenVerificationError("Firebase token verifier is unavailable", 503);

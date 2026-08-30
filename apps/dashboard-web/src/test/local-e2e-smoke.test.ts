@@ -101,6 +101,62 @@ describe("local dashboard end-to-end smoke", () => {
       teacherAfter.classes.flatMap((entry: { roster: unknown[] }) => entry.roster).length,
     );
   });
+
+  it("shares a link-mode assignment over HTTP and grants the student only after redemption", async () => {
+    const statePath = join(await mkdtemp(join(tmpdir(), "vijeeta-e2e-link-")), "dashboard-state.json");
+    createDemoServiceForTests(
+      new DashboardService(new DashboardStore({ filePath: statePath, now: () => "2026-08-27T12:00:00.000Z" })),
+    );
+
+    const quickTest = await postAction({
+      type: "create-quick-test",
+      topic: "Optics",
+      questionCount: 4,
+      difficulty: "mixed",
+      durationMinutes: 20,
+      negativeMarking: false,
+      releasePolicy: "after-test",
+    });
+    const shared = await postAction({
+      type: "create-assignment",
+      testId: quickTest.draft.id,
+      title: "Optics share link",
+      classIds: [],
+      directEmails: [],
+      access: "link",
+      requireLogin: true,
+    });
+
+    expect(shared.assignment.recipients).toEqual([]);
+    expect(shared.shareToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(await getSnapshot("teacher")).toEqual(expect.objectContaining({ role: "teacher" }));
+
+    const beforeRedemption = await getSnapshot("student");
+    expect(beforeRedemption.assignments.some(
+      (entry: { id: string }) => entry.id === shared.assignment.id,
+    )).toBe(false);
+
+    const rejected = await POST(new Request("http://localhost/api/demo", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ type: "redeem-assignment-link", assignmentId: shared.assignment.id, token: "b".repeat(43) }),
+    }));
+    expect(rejected.status).toBe(404);
+
+    const redeemed = await postAction({
+      type: "redeem-assignment-link",
+      assignmentId: shared.assignment.id,
+      token: shared.shareToken,
+    });
+    expect(redeemed.assignment.recipients).toEqual([
+      expect.objectContaining({ kind: "link", studentId: "student-aarav-kulkarni" }),
+    ]);
+
+    const afterRedemption = await getSnapshot("student");
+    const granted = afterRedemption.assignments.find((entry: { id: string }) => entry.id === shared.assignment.id);
+    expect(granted).toBeDefined();
+    expect(JSON.stringify(afterRedemption)).not.toContain(shared.shareToken);
+  });
 });
 
 async function getSnapshot(role: "teacher" | "student") {

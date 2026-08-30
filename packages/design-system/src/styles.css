@@ -16,6 +16,49 @@
   --vjt-motion-slow: 200ms;
   --vjt-size-target: 44px;
   --vjt-size-content: 72rem;
+  --vjt-brand-mark: var(--vjt-color-accent);
+  --vjt-brand-highlight: var(--vjt-color-warning);
+  --vjt-brand-mark-contrast: var(--vjt-color-accent-contrast);
+  --vjt-brand-wordmark: var(--vjt-color-text);
+  --vjt-brand-support: var(--vjt-color-support-text);
+  --vjt-brand-mark-size: 40px;
+}
+
+.vjt-brand-lockup {
+  align-items: center;
+  display: inline-flex;
+  gap: var(--vjt-space-small);
+}
+
+.vjt-brand-lockup__mark {
+  block-size: var(--vjt-brand-mark-size);
+  flex: none;
+  inline-size: var(--vjt-brand-mark-size);
+}
+
+.vjt-brand-lockup[data-size="compact"] {
+  --vjt-brand-mark-size: 32px;
+}
+
+.vjt-brand-lockup__text {
+  display: grid;
+  line-height: var(--vjt-line-height, 1.5);
+}
+
+.vjt-brand-lockup__wordmark {
+  color: var(--vjt-brand-wordmark);
+  font-size: var(--vjt-font-title, 20px);
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.vjt-brand-lockup[data-size="compact"] .vjt-brand-lockup__wordmark {
+  font-size: var(--vjt-font-body, 15px);
+}
+
+.vjt-brand-lockup__tagline {
+  color: var(--vjt-brand-support);
+  font-size: var(--vjt-font-support, 12px);
 }
 
 .vjt-button,

@@ -1,3 +1,5 @@
+import { BrandLockup, Button } from "@vijeeta/design-system";
+
 export interface RoleLandingProps {
   onSelectRole: (role: "teacher" | "student") => void;
 }
@@ -5,20 +7,20 @@ export interface RoleLandingProps {
 export function RoleLanding({ onSelectRole }: RoleLandingProps) {
   return (
     <section aria-labelledby="role-entry-title">
-      <span className="role-pill">Local fixture demo</span>
-      <h1 id="role-entry-title">Choose your demo workspace</h1>
+      <BrandLockup />
+      <h1 id="role-entry-title">Are you a teacher or a student?</h1>
       <p>
-        Explore the same class and test journey from either side. This simulated
-        sign-in never contacts production authentication.
+        Pick the way you will use ViJEEta. You can change this later from your
+        profile.
       </p>
       <div className="role-grid">
         <article className="role-card">
           <span aria-hidden="true">01 / TEACH</span>
           <div>
-            <h2>Plan the next checkpoint</h2>
+            <h2>I teach a class</h2>
             <p>
-              Invite a class, build a quick test, assign it, and inspect who
-              needs attention.
+              Invite a class, build a quick test, share it by link or email, and
+              see who needs attention.
             </p>
           </div>
           <Button onClick={() => onSelectRole("teacher")}>
@@ -28,10 +30,10 @@ export function RoleLanding({ onSelectRole }: RoleLandingProps) {
         <article className="role-card">
           <span aria-hidden="true">02 / LEARN</span>
           <div>
-            <h2>See the student view</h2>
+            <h2>I am preparing for an exam</h2>
             <p>
-              Review classes, open an assignment, submit an attempt, and read
-              personal insights.
+              Join a class, open the tests your teacher shares, submit an
+              attempt, and read your personal insights.
             </p>
           </div>
           <Button onClick={() => onSelectRole("student")}>
@@ -42,4 +44,3 @@ export function RoleLanding({ onSelectRole }: RoleLandingProps) {
     </section>
   );
 }
-import { Button } from "@vijeeta/design-system";

@@ -267,6 +267,142 @@ describe("DashboardStore", () => {
       .rejects.toMatchObject({ code: "not_found" });
   });
 
+  it("shares a link-mode assignment without recipients and stores only the token hash", async () => {
+    const filePath = await tempStatePath();
+    const store = new DashboardStore({ filePath, now: () => "2026-08-27T00:00:00.000Z" });
+    const created = await store.dispatch({
+      type: "create-assignment",
+      testId: "test-demo-physics-01",
+      title: "Shared revision",
+      classIds: [],
+      directEmails: [],
+      access: "link",
+      requireLogin: true,
+    });
+
+    if (created.type !== "assignment-created") throw new Error("expected assignment");
+    expect(created.assignment.recipients).toEqual([]);
+    expect(created.assignment.access).toBe("link");
+    expect(created.shareToken).toMatch(/^[A-Za-z0-9_-]{43}$/);
+
+    const persisted = JSON.parse(await readFile(filePath, "utf8"));
+    expect(persisted.links).toEqual([
+      { assignmentId: created.assignment.id, tokenHash: expect.stringMatching(/^[0-9a-f]{64}$/) },
+    ]);
+    expect(await readFile(filePath, "utf8")).not.toContain(created.shareToken);
+  });
+
+  it("grants link access only for a valid token and records the server-side identity", async () => {
+    const store = new DashboardStore({ filePath: await tempStatePath(), now: () => "2026-08-27T00:00:00.000Z" });
+    const created = await store.dispatch({
+      type: "create-assignment",
+      testId: "test-demo-physics-01",
+      title: "Shared revision",
+      classIds: [],
+      directEmails: [],
+      access: "link",
+      requireLogin: true,
+    });
+    if (created.type !== "assignment-created" || !created.shareToken) throw new Error("expected share token");
+
+    const beforeRedemption = await store.snapshot("student");
+    expect(beforeRedemption.assignments.some((entry) => entry.id === created.assignment.id)).toBe(false);
+    await expect(store.dispatch({ type: "start-attempt", assignmentId: created.assignment.id }))
+      .rejects.toMatchObject({ code: "not_found" });
+
+    await expect(store.dispatch({
+      type: "redeem-assignment-link",
+      assignmentId: created.assignment.id,
+      token: "a".repeat(43),
+    })).rejects.toMatchObject({ code: "not_found" });
+
+    const redeemed = await store.dispatch({
+      type: "redeem-assignment-link",
+      assignmentId: created.assignment.id,
+      token: created.shareToken,
+    });
+    if (redeemed.type !== "assignment-link-redeemed") throw new Error("expected redemption");
+    expect(redeemed.assignment.recipients).toEqual([
+      { kind: "link", studentId: "student-aarav-kulkarni", status: "pending", grantedAt: "2026-08-27T00:00:00.000Z" },
+    ]);
+
+    await store.dispatch({
+      type: "redeem-assignment-link",
+      assignmentId: created.assignment.id,
+      token: created.shareToken,
+    });
+    const afterRedemption = await store.snapshot("student");
+    const granted = afterRedemption.assignments.find((entry) => entry.id === created.assignment.id);
+    expect(granted?.recipients).toHaveLength(1);
+    expect((await store.dispatch({ type: "start-attempt", assignmentId: created.assignment.id })).type)
+      .toBe("attempt-started");
+  });
+
+  it("refuses a login-required link for an unauthenticated visitor and never matches on email", async () => {
+    const store = new DashboardStore({
+      filePath: await tempStatePath(),
+      now: () => "2026-08-27T00:00:00.000Z",
+      currentStudentId: () => null,
+    });
+    const created = await store.dispatch({
+      type: "create-assignment",
+      testId: "test-demo-physics-01",
+      title: "Shared revision",
+      classIds: [],
+      directEmails: [],
+      access: "link",
+      requireLogin: true,
+    });
+    if (created.type !== "assignment-created" || !created.shareToken) throw new Error("expected share token");
+
+    await expect(store.dispatch({
+      type: "redeem-assignment-link",
+      assignmentId: created.assignment.id,
+      token: created.shareToken,
+    })).rejects.toMatchObject({ code: "conflict" });
+
+    const open = await new DashboardStore({
+      filePath: await tempStatePath(),
+      now: () => "2026-08-27T00:00:00.000Z",
+      currentStudentId: () => null,
+    });
+    const openLink = await open.dispatch({
+      type: "create-assignment",
+      testId: "test-demo-physics-01",
+      title: "Open revision",
+      classIds: [],
+      directEmails: [],
+      access: "link",
+      requireLogin: false,
+    });
+    if (openLink.type !== "assignment-created" || !openLink.shareToken) throw new Error("expected share token");
+    const guest = await open.dispatch({
+      type: "redeem-assignment-link",
+      assignmentId: openLink.assignment.id,
+      token: openLink.shareToken,
+    });
+    if (guest.type !== "assignment-link-redeemed") throw new Error("expected redemption");
+    expect(guest.assignment.recipients[0]).toEqual(expect.objectContaining({ kind: "link" }));
+  });
+
+  it("keeps assignments created before link mode on the email default", async () => {
+    const filePath = await tempStatePath();
+    const store = new DashboardStore({ filePath, now: () => "2026-08-27T00:00:00.000Z" });
+    await store.snapshot("teacher");
+    const persisted = JSON.parse(await readFile(filePath, "utf8"));
+    expect(persisted.assignments.every((assignment: { access?: string }) => assignment.access === undefined)).toBe(true);
+
+    delete persisted.links;
+    await writeFile(filePath, JSON.stringify(persisted), "utf8");
+    const reloaded = await new DashboardStore({ filePath }).snapshot("teacher");
+    expect(reloaded.assignments[0].access).toBeUndefined();
+    await expect(new DashboardStore({ filePath }).dispatch({
+      type: "redeem-assignment-link",
+      assignmentId: reloaded.assignments[0].id,
+      token: "a".repeat(43),
+    })).rejects.toMatchObject({ code: "not_found" });
+  });
+
   it("captures messaging and test-engine interactions without external calls", async () => {
     const messages: string[] = [];
     const generated: string[] = [];
