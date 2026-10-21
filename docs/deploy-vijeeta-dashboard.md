@@ -27,9 +27,9 @@ The following are exact read-only preflight commands for the approved operator t
     gcloud artifacts repositories describe cloud-run-source-deploy --location=asia-south1 --project=neetcompanion-50b1f
     gcloud run services list --region=asia-south1 --project=neetcompanion-50b1f
     gcloud firestore locations list --project=neetcompanion-50b1f
-    gcloud firestore databases describe vijeeta-dashboard --project=neetcompanion-50b1f
+    gcloud firestore databases describe --database=vijeeta-dashboard --project=neetcompanion-50b1f
 
-The repository/service listings must be recorded before any push or Cloud Run change. A not-found result for the named database is expected while it is unused; it is evidence for review, not permission to create it. Do not run create, deploy, set-iam-policy, traffic, index, backup, or Firebase Console write operations until the approvals below are recorded.
+The repository/service listings must be recorded before any push or Cloud Run change. A not-found result for the named database is expected while it is unused; it is evidence for review, not permission to create it. The `--database=` flag on the describe command is mandatory: `gcloud firestore databases describe` defaults to `(default)`, so omitting it silently reads the legacy database this rollout must not touch. Do not run create, deploy, set-iam-policy, traffic, index, backup, or Firebase Console write operations until the approvals below are recorded.
 
 ## Identity and data authority
 
